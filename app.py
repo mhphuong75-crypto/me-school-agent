@@ -28,10 +28,11 @@ def _secret(key: str, default: str = "") -> str:
     except Exception:
         return os.getenv(key, default)
 
-APP_PASSWORD  = _secret("APP_PASSWORD")
-ANTHROPIC_KEY = _secret("ANTHROPIC_API_KEY")
-MODEL         = "claude-sonnet-4-5"
-MAX_TOKENS    = 4096
+APP_PASSWORD    = _secret("APP_PASSWORD")
+ANTHROPIC_KEY   = _secret("ANTHROPIC_API_KEY")
+MODEL           = "claude-sonnet-4-5"
+MODEL_FAST      = "claude-haiku-4-5"   # faster + cheaper for clarification check
+MAX_TOKENS      = 2048                  # most answers fit well within 2048
 
 # ── Page setup ─────────────────────────────────────────────────────────────
 
@@ -100,8 +101,8 @@ def needs_clarification(query: str) -> tuple[bool, list[str]]:
     client = get_client()
     try:
         resp = client.messages.create(
-            model=MODEL,
-            max_tokens=256,
+            model=MODEL_FAST,   # Haiku: ~5x faster for simple classification
+            max_tokens=128,
             system=CLARIFY_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": query}],
         )
@@ -117,14 +118,12 @@ def needs_clarification(query: str) -> tuple[bool, list[str]]:
         return False, []
 
 
-# ── Answer generation ──────────────────────────────────────────────────────
+# ── Retrieval ──────────────────────────────────────────────────────────────
 
-def generate_answer(conversation: list[dict]) -> tuple[str, list[dict]]:
+def get_retrieval(conversation: list[dict]) -> tuple[str, list[dict]]:
     """
-    Retrieve relevant chunks for the latest user message, inject them as
-    context into the system prompt, and call Claude.
-
-    Returns (answer_text, source_list).
+    Retrieve relevant chunks for the latest user message.
+    Returns (context_string, source_list).
     """
     last_user_msg = next(
         (m["content"] for m in reversed(conversation) if m["role"] == "user"),
@@ -139,20 +138,30 @@ def generate_answer(conversation: list[dict]) -> tuple[str, list[dict]]:
     if not hits:
         context = "Không tìm thấy tài liệu nào liên quan đến câu hỏi này."
 
+    return context, sources
+
+
+# ── Answer streaming ───────────────────────────────────────────────────────
+
+def stream_answer(conversation: list[dict], context: str):
+    """
+    Generator that streams Claude's answer token-by-token.
+    Call get_retrieval() first to obtain context.
+    """
     system_with_context = (
         SYSTEM_PROMPT
         + f"\n\n[CONTEXT]\n{context}\n[/CONTEXT]"
     )
 
     client = get_client()
-    resp   = client.messages.create(
+    with client.messages.stream(
         model=MODEL,
         max_tokens=MAX_TOKENS,
         system=system_with_context,
         messages=conversation,
-    )
-    answer = resp.content[0].text
-    return answer, sources
+    ) as stream:
+        for text in stream.text_stream:
+            yield text
 
 
 # ── Session state ──────────────────────────────────────────────────────────
@@ -215,12 +224,12 @@ if user_input:
 
             st.stop()
 
-    # --- Generate the actual answer ---
+    # --- Retrieve relevant docs (fast — shown under spinner) ---
     with st.spinner("Đang tìm kiếm tài liệu…"):
         try:
-            answer, sources = generate_answer(st.session_state.messages)
+            context, sources = get_retrieval(st.session_state.messages)
         except Exception as e:
-            answer  = f"⚠️ Lỗi khi gọi API: {e}"
+            context = "Không tìm thấy tài liệu nào liên quan đến câu hỏi này."
             sources = []
 
     # Build source footer HTML
@@ -238,14 +247,21 @@ if user_input:
                 + "</div>"
             )
 
-    full_response = answer + ("\n\n" + source_html if source_html else "")
+    # --- Stream the answer — user sees text within ~2 s ---
+    with st.chat_message("assistant"):
+        try:
+            answer = st.write_stream(stream_answer(st.session_state.messages, context))
+        except Exception as e:
+            answer = f"⚠️ Lỗi khi gọi API: {e}"
+            st.markdown(answer)
 
+        if source_html:
+            st.markdown(source_html, unsafe_allow_html=True)
+
+    full_response = answer + ("\n\n" + source_html if source_html else "")
     st.session_state.messages.append(
         {"role": "assistant", "content": full_response}
     )
-
-    with st.chat_message("assistant"):
-        st.markdown(full_response, unsafe_allow_html=True)
 
 # --- Sidebar ---
 with st.sidebar:
