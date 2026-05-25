@@ -8,3 +8,4 @@ openpyxl>=3.1.0
 python-pptx>=0.6.23
 python-dotenv>=1.0.0
 unicodedata2>=15.0.0
+protobuf>=3.20.0,<4.0.0
