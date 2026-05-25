@@ -16,8 +16,9 @@ load_dotenv()
 VECTORS_PATH  = Path("vectors.npy")
 METADATA_PATH = Path("metadata.json")
 MODEL_NAME    = "paraphrase-multilingual-MiniLM-L12-v2"
-TOP_K         = 6
-KEYWORD_TOP_K = 4
+TOP_K              = 8     # semantic candidates to consider
+KEYWORD_TOP_K      = 4     # keyword match results
+SEM_MAX_DISTANCE   = 0.45  # only keep semantic hits with distance ≤ this (similarity ≥ 0.55)
 
 # ── Lazy singletons ────────────────────────────────────────────────────────
 
@@ -89,11 +90,14 @@ def search(query: str, top_k: int = TOP_K) -> list[dict]:
     top_idx = np.argsort(-sims)[:top_k * 3]      # fetch extra, filter dupes
     sem_hits = []
     for i in top_idx:
+        dist = float(1 - sims[i])
+        if dist > SEM_MAX_DISTANCE:
+            continue   # not similar enough — skip
         fp = records[i].get("file_path", "")
         if fp in seen_paths:
             continue
         seen_paths.add(fp)
-        sem_hits.append({**records[i], "score": round(float(1 - sims[i]), 4)})
+        sem_hits.append({**records[i], "score": round(dist, 4)})
         if len(sem_hits) >= top_k:
             break
 
@@ -110,9 +114,12 @@ def format_context(hits: list[dict]) -> str:
 
 
 def unique_sources(hits: list[dict]) -> list[dict]:
+    """Only show sources that are keyword matches or high-confidence semantic matches."""
     seen = {}
     for h in hits:
-        fp = h.get("file_path", "")
-        if fp and fp not in seen:
+        fp    = h.get("file_path", "")
+        score = h.get("score", 1.0)
+        # Show: keyword matches (score=0.0) OR strong semantic match (score < 0.35)
+        if fp and fp not in seen and (score == 0.0 or score < 0.30):
             seen[fp] = {"file_name": h["file_name"], "url": h.get("url", "")}
     return list(seen.values())
