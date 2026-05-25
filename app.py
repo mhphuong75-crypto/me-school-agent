@@ -135,6 +135,10 @@ def generate_answer(conversation: list[dict]) -> tuple[str, list[dict]]:
     context = format_context(hits)
     sources = unique_sources(hits)
 
+    # If nothing found, tell Claude explicitly so it doesn't hallucinate
+    if not hits:
+        context = "Không tìm thấy tài liệu nào liên quan đến câu hỏi này."
+
     system_with_context = (
         SYSTEM_PROMPT
         + f"\n\n[CONTEXT]\n{context}\n[/CONTEXT]"

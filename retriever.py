@@ -13,8 +13,8 @@ load_dotenv()
 CHROMA_PATH = "./chroma_db"
 COLLECTION  = "me_school_manual"
 MODEL_NAME  = "paraphrase-multilingual-MiniLM-L12-v2"
-TOP_K              = 8     # fetch more candidates so filtering has enough to work with
-DISTANCE_THRESHOLD = 0.50  # cosine distance — drop chunks above this (0=identical, 1=unrelated)
+TOP_K              = 8     # number of chunks to retrieve
+DISTANCE_THRESHOLD = 1.20  # cosine distance — drop only completely unrelated chunks (0=identical, 2=opposite)
 
 # ── Lazy singletons ────────────────────────────────────────────────────────
 
