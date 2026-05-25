@@ -13,7 +13,8 @@ load_dotenv()
 CHROMA_PATH = "./chroma_db"
 COLLECTION  = "me_school_manual"
 MODEL_NAME  = "paraphrase-multilingual-MiniLM-L12-v2"
-TOP_K       = 6   # number of chunks to return per query
+TOP_K              = 8     # fetch more candidates so filtering has enough to work with
+DISTANCE_THRESHOLD = 0.50  # cosine distance — drop chunks above this (0=identical, 1=unrelated)
 
 # ── Lazy singletons ────────────────────────────────────────────────────────
 
@@ -70,6 +71,8 @@ def search(query: str, top_k: int = TOP_K) -> list[dict]:
     distances = results["distances"][0]
 
     for doc, meta, dist in zip(documents, metadatas, distances):
+        if dist > DISTANCE_THRESHOLD:
+            continue   # too loosely related — skip
         hits.append({
             "text":      doc,
             "file_name": meta.get("file_name", ""),

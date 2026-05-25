@@ -8,6 +8,8 @@ Run:
 
 import json
 import os
+import subprocess
+import sys
 import anthropic
 import streamlit as st
 from dotenv import load_dotenv
@@ -252,7 +254,35 @@ with st.sidebar:
         3. Nhận câu trả lời kèm nguồn tài liệu
         """
     )
-    if st.button("🗑️ Xoá lịch sử chat"):
+
+    st.divider()
+    st.subheader("🗄️ Cập nhật tài liệu")
+    st.caption("Dùng khi thêm hoặc sửa file trong thư mục tài liệu.")
+    if st.button("🔄 Cập nhật tài liệu", use_container_width=True):
+        with st.spinner("Đang cập nhật… (vài phút)"):
+            result = subprocess.run(
+                [sys.executable, "ingest.py"],
+                capture_output=True, text=True
+            )
+        if result.returncode == 0:
+            st.success("✅ Cập nhật xong!")
+        else:
+            st.error("❌ Lỗi:\n" + result.stderr[-500:])
+
+    st.caption("Dùng khi XOÁ file khỏi thư mục tài liệu.")
+    if st.button("🔁 Xây lại toàn bộ", use_container_width=True):
+        with st.spinner("Đang xây lại từ đầu… (5-10 phút)"):
+            result = subprocess.run(
+                [sys.executable, "ingest.py", "--reset"],
+                capture_output=True, text=True
+            )
+        if result.returncode == 0:
+            st.success("✅ Xây lại xong!")
+        else:
+            st.error("❌ Lỗi:\n" + result.stderr[-500:])
+
+    st.divider()
+    if st.button("🗑️ Xoá lịch sử chat", use_container_width=True):
         st.session_state.messages = []
         st.session_state.pending_clarification = False
         st.rerun()
