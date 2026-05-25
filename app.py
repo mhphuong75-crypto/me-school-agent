@@ -21,8 +21,15 @@ load_dotenv()
 
 # ── Config ─────────────────────────────────────────────────────────────────
 
-APP_PASSWORD  = os.getenv("APP_PASSWORD", "")
-ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+def _secret(key: str, default: str = "") -> str:
+    """Read from Streamlit secrets (cloud) or .env (local)."""
+    try:
+        return st.secrets[key]
+    except Exception:
+        return os.getenv(key, default)
+
+APP_PASSWORD  = _secret("APP_PASSWORD")
+ANTHROPIC_KEY = _secret("ANTHROPIC_API_KEY")
 MODEL         = "claude-sonnet-4-5"
 MAX_TOKENS    = 4096
 
