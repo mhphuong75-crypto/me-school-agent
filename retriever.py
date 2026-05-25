@@ -107,9 +107,11 @@ def search(query: str, top_k: int = TOP_K) -> list[dict]:
 # ── Formatting ─────────────────────────────────────────────────────────────
 
 def format_context(hits: list[dict]) -> str:
+    """Build context for Claude. File names are hidden to prevent Claude
+    from listing them in the answer — sources are shown separately in the UI."""
     parts = []
     for i, h in enumerate(hits, 1):
-        parts.append(f"--- Đoạn {i} | Nguồn: {h['file_name']} ---\n{h['text']}")
+        parts.append(f"--- Đoạn {i} ---\n{h['text']}")
     return "\n\n".join(parts)
 
 
