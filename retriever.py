@@ -1,20 +1,25 @@
 """
 ME School Manual — Retriever
-Embeds a query and returns the top-k most relevant document chunks from ChromaDB.
+Hybrid search: semantic (embeddings) + keyword (filename & content matching).
 """
 
 from __future__ import annotations
 import os
-from pathlib import Path
+import unicodedata
 from dotenv import load_dotenv
 
 load_dotenv()
 
-CHROMA_PATH = "./chroma_db"
-COLLECTION  = "me_school_manual"
-MODEL_NAME  = "paraphrase-multilingual-MiniLM-L12-v2"
-TOP_K              = 8     # number of chunks to retrieve
-DISTANCE_THRESHOLD = 1.20  # cosine distance — drop only completely unrelated chunks (0=identical, 2=opposite)
+CHROMA_PATH        = "./chroma_db"
+COLLECTION         = "me_school_manual"
+MODEL_NAME         = "paraphrase-multilingual-MiniLM-L12-v2"
+TOP_K              = 8     # semantic results
+DISTANCE_THRESHOLD = 1.20  # drop only completely unrelated chunks
+KEYWORD_TOP_K      = 4     # extra chunks added by keyword match
+
+
+def _nfc(s: str) -> str:
+    return unicodedata.normalize("NFC", s).lower()
 
 # ── Lazy singletons ────────────────────────────────────────────────────────
 
@@ -42,23 +47,57 @@ def _get_model():
 
 # ── Public API ─────────────────────────────────────────────────────────────
 
+def _keyword_hits(query: str, all_docs, all_metas, seen_paths: set) -> list[dict]:
+    """
+    Scan all chunks for keyword matches in filename or content.
+    Returns up to KEYWORD_TOP_K chunks not already in seen_paths.
+    """
+    keywords = [w for w in _nfc(query).split() if len(w) >= 3]
+    if not keywords:
+        return []
+
+    scored = []
+    for doc, meta in zip(all_docs, all_metas):
+        fp = meta.get("file_path", "")
+        if fp in seen_paths:
+            continue
+        fname = _nfc(meta.get("file_name", ""))
+        text  = _nfc(doc)
+        # count how many keywords appear in filename or text
+        fname_hits = sum(1 for k in keywords if k in fname)
+        text_hits  = sum(1 for k in keywords if k in text)
+        if fname_hits > 0 or text_hits >= 2:
+            scored.append((-(fname_hits * 3 + text_hits), doc, meta))
+
+    scored.sort(key=lambda x: x[0])
+    results = []
+    added_paths = set()
+    for _, doc, meta in scored[:KEYWORD_TOP_K]:
+        fp = meta.get("file_path", "")
+        if fp in added_paths:
+            continue
+        added_paths.add(fp)
+        results.append({
+            "text":      doc,
+            "file_name": meta.get("file_name", ""),
+            "file_path": fp,
+            "url":       meta.get("url", ""),
+            "folder":    meta.get("folder", ""),
+            "score":     0.0,  # keyword match — treat as high relevance
+        })
+    return results
+
+
 def search(query: str, top_k: int = TOP_K) -> list[dict]:
     """
-    Embed *query* and return the top-k most similar chunks.
-
-    Each result dict has keys:
-        text      – the chunk text
-        file_name – original filename
-        file_path – relative path inside the manual root
-        url       – OneDrive URL (or file:// local path)
-        folder    – top-level section folder name
-        score     – cosine distance (lower = more similar; kept for debugging)
+    Hybrid search: semantic embeddings + keyword fallback.
+    Returns deduplicated, ranked chunks.
     """
     model      = _get_model()
     collection = _get_collection()
 
+    # ── Semantic search ──────────────────────────────────────────────────────
     embedding = model.encode(query).tolist()
-
     results = collection.query(
         query_embeddings=[embedding],
         n_results=min(top_k, collection.count()),
@@ -66,21 +105,29 @@ def search(query: str, top_k: int = TOP_K) -> list[dict]:
     )
 
     hits = []
-    documents = results["documents"][0]
-    metadatas = results["metadatas"][0]
-    distances = results["distances"][0]
-
-    for doc, meta, dist in zip(documents, metadatas, distances):
+    seen_paths = set()
+    for doc, meta, dist in zip(
+        results["documents"][0],
+        results["metadatas"][0],
+        results["distances"][0],
+    ):
         if dist > DISTANCE_THRESHOLD:
-            continue   # too loosely related — skip
+            continue
+        fp = meta.get("file_path", "")
         hits.append({
             "text":      doc,
             "file_name": meta.get("file_name", ""),
-            "file_path": meta.get("file_path", ""),
+            "file_path": fp,
             "url":       meta.get("url", ""),
             "folder":    meta.get("folder", ""),
             "score":     round(dist, 4),
         })
+        seen_paths.add(fp)
+
+    # ── Keyword fallback: scan ALL chunks for exact term matches ─────────────
+    all_data  = collection.get(include=["documents", "metadatas"])
+    kw_hits   = _keyword_hits(query, all_data["documents"], all_data["metadatas"], seen_paths)
+    hits      = kw_hits + hits   # keyword matches go first
 
     return hits
 
