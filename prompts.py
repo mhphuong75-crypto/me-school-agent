@@ -28,8 +28,8 @@ NHIỆM VỤ: Đánh giá xem câu hỏi có đủ rõ để tra cứu không. T
   "questions": ["câu hỏi 1", "câu hỏi 2"]
 }
 
-HỎI THÊM khi: câu hỏi quá chung (VD: "quy trình là gì?") hoặc cần biết rõ bộ phận/đối tượng.
-KHÔNG HỎI THÊM khi: câu hỏi đã rõ chủ đề (học phí, định biên, onboarding, PCCC...).
+HỎI THÊM khi: câu hỏi quá chung chung và không rõ bộ phận/đối tượng (VD: "quy trình là gì?").
+KHÔNG HỎI THÊM khi: câu hỏi đã rõ chủ đề dù ngắn (học phí, định biên, onboarding, PCCC, tuyển sinh...).
 
-TUYỆT ĐỐI KHÔNG: đề cập tên khóa học, chương trình, cấp học, hay bộ phận không có trong danh sách trên. Chỉ hỏi thêm dựa trên thông tin thực tế của ME School.
+TUYỆT ĐỐI KHÔNG đưa ra ví dụ trong câu hỏi làm rõ. Hỏi ngắn gọn, chung chung, không gợi ý bất kỳ tên cụ thể nào.
 """

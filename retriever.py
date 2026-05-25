@@ -1,40 +1,29 @@
 """
 ME School Manual — Retriever
-Hybrid search: semantic (embeddings) + keyword (filename & content matching).
+Hybrid search: numpy cosine similarity + keyword filename matching.
+No ChromaDB — uses vectors.npy + metadata.json (git-friendly).
 """
 
 from __future__ import annotations
-import os
+import json
 import unicodedata
+import numpy as np
+from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
 
-CHROMA_PATH        = "./chroma_db"
-COLLECTION         = "me_school_manual"
-MODEL_NAME         = "paraphrase-multilingual-MiniLM-L12-v2"
-TOP_K              = 8     # semantic results
-DISTANCE_THRESHOLD = 1.20  # drop only completely unrelated chunks
-KEYWORD_TOP_K      = 4     # extra chunks added by keyword match
-
-
-def _nfc(s: str) -> str:
-    return unicodedata.normalize("NFC", s).lower()
+VECTORS_PATH  = Path("vectors.npy")
+METADATA_PATH = Path("metadata.json")
+MODEL_NAME    = "paraphrase-multilingual-MiniLM-L12-v2"
+TOP_K         = 6
+KEYWORD_TOP_K = 4
 
 # ── Lazy singletons ────────────────────────────────────────────────────────
 
-_client     = None
-_collection = None
-_model      = None
-
-
-def _get_collection():
-    global _client, _collection
-    if _collection is None:
-        import chromadb
-        _client     = chromadb.PersistentClient(path=CHROMA_PATH)
-        _collection = _client.get_collection(COLLECTION)
-    return _collection
+_model    = None
+_vectors  = None
+_records  = None
 
 
 def _get_model():
@@ -45,114 +34,85 @@ def _get_model():
     return _model
 
 
-# ── Public API ─────────────────────────────────────────────────────────────
+def _get_index():
+    global _vectors, _records
+    if _vectors is None:
+        _vectors = np.load(str(VECTORS_PATH))                        # (N, 384)
+        with open(METADATA_PATH, encoding="utf-8") as f:
+            _records = json.load(f)
+    return _vectors, _records
 
-def _keyword_hits(query: str, all_docs, all_metas, seen_paths: set) -> list[dict]:
-    """
-    Scan all chunks for keyword matches in filename or content.
-    Returns up to KEYWORD_TOP_K chunks not already in seen_paths.
-    """
-    keywords = [w for w in _nfc(query).split() if len(w) >= 3]
-    if not keywords:
-        return []
 
-    scored = []
-    for doc, meta in zip(all_docs, all_metas):
-        fp = meta.get("file_path", "")
-        if fp in seen_paths:
-            continue
-        fname = _nfc(meta.get("file_name", ""))
-        text  = _nfc(doc)
-        # count how many keywords appear in filename or text
-        fname_hits = sum(1 for k in keywords if k in fname)
-        text_hits  = sum(1 for k in keywords if k in text)
-        if fname_hits > 0 or text_hits >= 2:
-            scored.append((-(fname_hits * 3 + text_hits), doc, meta))
+def _nfc(s: str) -> str:
+    return unicodedata.normalize("NFC", s).lower()
 
-    scored.sort(key=lambda x: x[0])
-    results = []
-    added_paths = set()
-    for _, doc, meta in scored[:KEYWORD_TOP_K]:
-        fp = meta.get("file_path", "")
-        if fp in added_paths:
-            continue
-        added_paths.add(fp)
-        results.append({
-            "text":      doc,
-            "file_name": meta.get("file_name", ""),
-            "file_path": fp,
-            "url":       meta.get("url", ""),
-            "folder":    meta.get("folder", ""),
-            "score":     0.0,  # keyword match — treat as high relevance
-        })
-    return results
 
+# ── Search ─────────────────────────────────────────────────────────────────
 
 def search(query: str, top_k: int = TOP_K) -> list[dict]:
-    """
-    Hybrid search: semantic embeddings + keyword fallback.
-    Returns deduplicated, ranked chunks.
-    """
-    model      = _get_model()
-    collection = _get_collection()
+    """Hybrid: keyword filename match first, then cosine similarity."""
+    model             = _get_model()
+    vectors, records  = _get_index()
 
-    # ── Semantic search ──────────────────────────────────────────────────────
-    embedding = model.encode(query).tolist()
-    results = collection.query(
-        query_embeddings=[embedding],
-        n_results=min(top_k, collection.count()),
-        include=["documents", "metadatas", "distances"],
-    )
+    # ── 1. Keyword match on filename ────────────────────────────────────────
+    keywords     = [w for w in _nfc(query).split() if len(w) >= 3]
+    seen_paths   = set()
+    kw_hits      = []
 
-    hits = []
-    seen_paths = set()
-    for doc, meta, dist in zip(
-        results["documents"][0],
-        results["metadatas"][0],
-        results["distances"][0],
-    ):
-        if dist > DISTANCE_THRESHOLD:
+    if keywords:
+        scored = []
+        for i, rec in enumerate(records):
+            fname      = _nfc(rec.get("file_name", ""))
+            text       = _nfc(rec.get("text", ""))
+            fname_hits = sum(1 for k in keywords if k in fname)
+            text_hits  = sum(1 for k in keywords if k in text)
+            if fname_hits > 0 or text_hits >= 2:
+                scored.append((-(fname_hits * 3 + text_hits), i))
+
+        scored.sort(key=lambda x: x[0])
+        added = set()
+        for _, i in scored:
+            fp = records[i].get("file_path", "")
+            if fp not in added:
+                added.add(fp)
+                seen_paths.add(fp)
+                kw_hits.append({**records[i], "score": 0.0})
+            if len(kw_hits) >= KEYWORD_TOP_K:
+                break
+
+    # ── 2. Cosine similarity ────────────────────────────────────────────────
+    q_vec  = model.encode(query).astype("float32")
+    q_norm = q_vec / (np.linalg.norm(q_vec) + 1e-9)
+    norms  = np.linalg.norm(vectors, axis=1, keepdims=True) + 1e-9
+    sims   = (vectors / norms) @ q_norm          # cosine similarity (higher = better)
+
+    top_idx = np.argsort(-sims)[:top_k * 3]      # fetch extra, filter dupes
+    sem_hits = []
+    for i in top_idx:
+        fp = records[i].get("file_path", "")
+        if fp in seen_paths:
             continue
-        fp = meta.get("file_path", "")
-        hits.append({
-            "text":      doc,
-            "file_name": meta.get("file_name", ""),
-            "file_path": fp,
-            "url":       meta.get("url", ""),
-            "folder":    meta.get("folder", ""),
-            "score":     round(dist, 4),
-        })
         seen_paths.add(fp)
+        sem_hits.append({**records[i], "score": round(float(1 - sims[i]), 4)})
+        if len(sem_hits) >= top_k:
+            break
 
-    # ── Keyword fallback: scan ALL chunks for exact term matches ─────────────
-    all_data  = collection.get(include=["documents", "metadatas"])
-    kw_hits   = _keyword_hits(query, all_data["documents"], all_data["metadatas"], seen_paths)
-    hits      = kw_hits + hits   # keyword matches go first
+    return kw_hits + sem_hits
 
-    return hits
 
+# ── Formatting ─────────────────────────────────────────────────────────────
 
 def format_context(hits: list[dict]) -> str:
-    """
-    Build the [CONTEXT] block injected into the system prompt.
-    Each chunk is prefixed with its source so the LLM can cite it.
-    """
     parts = []
     for i, h in enumerate(hits, 1):
-        parts.append(
-            f"--- Đoạn {i} | Nguồn: {h['file_name']} ---\n{h['text']}"
-        )
+        parts.append(f"--- Đoạn {i} | Nguồn: {h['file_name']} ---\n{h['text']}")
     return "\n\n".join(parts)
 
 
 def unique_sources(hits: list[dict]) -> list[dict]:
-    """
-    Deduplicate hits by file_path and return a list of
-    {'file_name': ..., 'url': ...} dicts for the source footer.
-    """
     seen = {}
     for h in hits:
-        fp = h["file_path"]
+        fp = h.get("file_path", "")
         if fp and fp not in seen:
-            seen[fp] = {"file_name": h["file_name"], "url": h["url"]}
+            seen[fp] = {"file_name": h["file_name"], "url": h.get("url", "")}
     return list(seen.values())

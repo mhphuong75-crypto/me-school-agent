@@ -112,30 +112,17 @@ def to_url(rel_path: str) -> str:
 # ── Main ───────────────────────────────────────────────────────────────────
 
 def main():
-    import chromadb
+    import json
+    import numpy as np
     from sentence_transformers import SentenceTransformer
 
-    reset = "--reset" in sys.argv
-
     print(f"Manual root : {MANUAL_ROOT}")
-    print(f"ChromaDB    : {CHROMA_PATH}")
     print(f"OneDrive URL: {ONEDRIVE_BASE or '(not set — local paths will be used)'}")
     print()
 
     if not MANUAL_ROOT.exists():
         print(f"ERROR: MANUAL_ROOT not found: {MANUAL_ROOT}")
         sys.exit(1)
-
-    client = chromadb.PersistentClient(path=CHROMA_PATH)
-
-    if reset and COLLECTION in [c.name for c in client.list_collections()]:
-        client.delete_collection(COLLECTION)
-        print("Collection reset.")
-
-    collection = client.get_or_create_collection(
-        name=COLLECTION,
-        metadata={"hnsw:space": "cosine"}
-    )
 
     print("Loading embedding model (first run downloads ~120 MB)…")
     model = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
@@ -151,9 +138,11 @@ def main():
     ]
     print(f"Found {len(files)} files to index.\n")
 
-    total_chunks = 0
+    all_vectors  = []
+    all_records  = []
+
     for file_idx, fpath in enumerate(files, 1):
-        rel = fpath.relative_to(MANUAL_ROOT)
+        rel    = fpath.relative_to(MANUAL_ROOT)
         folder = rel.parts[0] if len(rel.parts) > 1 else "root"
         print(f"[{file_idx}/{len(files)}] {rel}")
 
@@ -166,37 +155,32 @@ def main():
         if not chunks:
             continue
 
-        url = to_url(str(rel))
-        embeddings = model.encode(chunks, show_progress_bar=False).tolist()
+        url        = to_url(str(rel))
+        embeddings = model.encode(chunks, show_progress_bar=False)
 
-        ids, docs, metas, embs = [], [], [], []
         for i, (c, emb) in enumerate(zip(chunks, embeddings)):
-            doc_id = hashlib.md5(f"{rel}_{i}".encode()).hexdigest()
-            ids.append(doc_id)
-            docs.append(c)
-            metas.append({
+            all_vectors.append(emb)
+            all_records.append({
+                "text":      c,
                 "file_name": fpath.name,
                 "file_path": str(rel),
                 "folder":    folder,
                 "url":       url,
-                "chunk_idx": i,
             })
-            embs.append(emb)
 
-        # Upsert in batches of 100
-        for start in range(0, len(ids), 100):
-            collection.upsert(
-                ids=ids[start:start+100],
-                documents=docs[start:start+100],
-                metadatas=metas[start:start+100],
-                embeddings=embs[start:start+100],
-            )
-
-        total_chunks += len(chunks)
         print(f"  → {len(chunks)} chunks indexed")
 
-    print(f"\nDone. Total chunks indexed: {total_chunks}")
-    print(f"Collection '{COLLECTION}' has {collection.count()} entries.")
+    # Save to git-friendly files
+    vectors_path  = Path("vectors.npy")
+    metadata_path = Path("metadata.json")
+
+    np.save(str(vectors_path), np.array(all_vectors, dtype="float32"))
+    with open(metadata_path, "w", encoding="utf-8") as f:
+        json.dump(all_records, f, ensure_ascii=False)
+
+    print(f"\nDone. Total chunks: {len(all_records)}")
+    print(f"Saved: {vectors_path} ({vectors_path.stat().st_size/1024/1024:.1f} MB)")
+    print(f"Saved: {metadata_path} ({metadata_path.stat().st_size/1024/1024:.1f} MB)")
 
 if __name__ == "__main__":
     main()
