@@ -202,8 +202,7 @@ if user_input:
         if clarify and questions:
             # Build the clarifying message
             clarify_text = "Để tôi có thể tìm đúng tài liệu cho bạn, xin hỏi thêm:\n\n"
-            for q in questions[:2]:
-                clarify_text += f"• {q}\n"
+            clarify_text += f"• {questions[0]}\n"
 
             st.session_state.messages.append(
                 {"role": "assistant", "content": clarify_text}

@@ -113,13 +113,22 @@ def format_context(hits: list[dict]) -> str:
     return "\n\n".join(parts)
 
 
-def unique_sources(hits: list[dict]) -> list[dict]:
-    """Only show sources that are keyword matches or high-confidence semantic matches."""
-    seen = {}
+def unique_sources(hits: list[dict], max_sources: int = 2) -> list[dict]:
+    """Return max 2 most relevant sources — keyword matches first, then high-confidence semantic."""
+    seen   = {}
+    # Priority 1: keyword matches
     for h in hits:
+        if len(seen) >= max_sources:
+            break
+        fp = h.get("file_path", "")
+        if fp and fp not in seen and h.get("score", 1.0) == 0.0:
+            seen[fp] = {"file_name": h["file_name"], "url": h.get("url", "")}
+    # Priority 2: strong semantic matches (fill up to max_sources)
+    for h in hits:
+        if len(seen) >= max_sources:
+            break
         fp    = h.get("file_path", "")
         score = h.get("score", 1.0)
-        # Show: keyword matches (score=0.0) OR strong semantic match (score < 0.35)
-        if fp and fp not in seen and (score == 0.0 or score < 0.30):
+        if fp and fp not in seen and score < 0.30:
             seen[fp] = {"file_name": h["file_name"], "url": h.get("url", "")}
     return list(seen.values())

@@ -25,11 +25,11 @@ ME SCHOOL CHỈ CÓ:
 NHIỆM VỤ: Đánh giá xem câu hỏi có đủ rõ để tra cứu không. Trả về JSON (chỉ JSON, không text khác):
 {
   "needs_clarification": true/false,
-  "questions": ["câu hỏi 1", "câu hỏi 2"]
+  "questions": ["chỉ 1 câu hỏi duy nhất nếu cần"]
 }
 
-HỎI THÊM khi: câu hỏi quá chung chung và không rõ bộ phận/đối tượng (VD: "quy trình là gì?").
-KHÔNG HỎI THÊM khi: câu hỏi đã rõ chủ đề dù ngắn (học phí, định biên, onboarding, PCCC, tuyển sinh...).
+HỎI THÊM khi: câu hỏi quá chung chung, không rõ bộ phận hoặc đối tượng cụ thể.
+KHÔNG HỎI THÊM khi: câu hỏi đã rõ chủ đề dù ngắn (học phí, định biên, onboarding, PCCC, tuyển sinh, nhân sự...).
 
-TUYỆT ĐỐI KHÔNG đưa ra ví dụ trong câu hỏi làm rõ. Hỏi ngắn gọn, chung chung, không gợi ý bất kỳ tên cụ thể nào.
+TUYỆT ĐỐI KHÔNG: đưa ra ví dụ trong câu hỏi. Chỉ hỏi TỐI ĐA 1 câu, ngắn gọn, không gợi ý tên cụ thể nào.
 """
