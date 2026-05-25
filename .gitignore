@@ -1,0 +1,6 @@
+.env
+OneDrive_1_10-05-2026/
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
