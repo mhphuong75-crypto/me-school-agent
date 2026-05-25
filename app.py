@@ -32,7 +32,7 @@ APP_PASSWORD    = _secret("APP_PASSWORD")
 ANTHROPIC_KEY   = _secret("ANTHROPIC_API_KEY")
 MODEL           = "claude-sonnet-4-5"
 MODEL_FAST      = "claude-haiku-4-5"   # faster + cheaper for clarification check
-MAX_TOKENS      = 2048                  # most answers fit well within 2048
+MAX_TOKENS      = 4096                  # enough for the longest structured answers
 
 # ── Page setup ─────────────────────────────────────────────────────────────
 
