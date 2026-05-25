@@ -264,29 +264,40 @@ with st.sidebar:
 
     st.divider()
     st.subheader("🗄️ Cập nhật tài liệu")
-    st.caption("Dùng khi thêm hoặc sửa file trong thư mục tài liệu.")
-    if st.button("🔄 Cập nhật tài liệu", use_container_width=True):
-        with st.spinner("Đang cập nhật… (vài phút)"):
-            result = subprocess.run(
-                [sys.executable, "ingest.py"],
-                capture_output=True, text=True
-            )
-        if result.returncode == 0:
-            st.success("✅ Cập nhật xong!")
-        else:
-            st.error("❌ Lỗi:\n" + result.stderr[-500:])
 
-    st.caption("Dùng khi XOÁ file khỏi thư mục tài liệu.")
-    if st.button("🔁 Xây lại toàn bộ", use_container_width=True):
-        with st.spinner("Đang xây lại từ đầu… (5-10 phút)"):
-            result = subprocess.run(
-                [sys.executable, "ingest.py", "--reset"],
-                capture_output=True, text=True
-            )
-        if result.returncode == 0:
-            st.success("✅ Xây lại xong!")
-        else:
-            st.error("❌ Lỗi:\n" + result.stderr[-500:])
+    # Check if running locally (MANUAL_ROOT exists) or on Streamlit Cloud
+    manual_root = os.getenv("MANUAL_ROOT", "")
+    is_local = manual_root and os.path.exists(manual_root)
+
+    if is_local:
+        st.caption("Dùng khi thêm hoặc sửa file trong thư mục tài liệu.")
+        if st.button("🔄 Cập nhật tài liệu", use_container_width=True):
+            with st.spinner("Đang cập nhật… (vài phút)"):
+                result = subprocess.run(
+                    [sys.executable, "ingest.py"],
+                    capture_output=True, text=True
+                )
+            if result.returncode == 0:
+                st.success("✅ Cập nhật xong!")
+            else:
+                st.error("❌ Lỗi:\n" + result.stderr[-500:])
+
+        st.caption("Dùng khi XOÁ file khỏi thư mục tài liệu.")
+        if st.button("🔁 Xây lại toàn bộ", use_container_width=True):
+            with st.spinner("Đang xây lại từ đầu… (5-10 phút)"):
+                result = subprocess.run(
+                    [sys.executable, "ingest.py", "--reset"],
+                    capture_output=True, text=True
+                )
+            if result.returncode == 0:
+                st.success("✅ Xây lại xong!")
+            else:
+                st.error("❌ Lỗi:\n" + result.stderr[-500:])
+    else:
+        st.info(
+            "Để cập nhật tài liệu: chạy `2_build_database.sh` trên máy tính "
+            "→ commit & push lên GitHub → app tự cập nhật sau 1–2 phút."
+        )
 
     st.divider()
     if st.button("🗑️ Xoá lịch sử chat", use_container_width=True):
