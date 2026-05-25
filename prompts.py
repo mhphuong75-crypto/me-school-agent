@@ -15,6 +15,15 @@ CÁCH LÀM VIỆC:
 • KHÔNG tự thêm phần "Nguồn" hay đường dẫn file vào câu trả lời — hệ thống sẽ tự động hiển thị nguồn bên dưới.
 """
 
+ONBOARDING_QUERY = """Tôi là nhân viên mới vừa vào làm tại ME School. Hãy xây dựng cho tôi một **kế hoạch tự học 5 ngày** từ bộ tài liệu vận hành của trường, gồm những kiến thức và quy trình quan trọng nhất tôi cần nắm để làm việc hiệu quả.
+
+Trình bày rõ ràng theo từng ngày (Ngày 1 → Ngày 5), mỗi ngày gồm:
+- Chủ đề cần học
+- Nội dung chính cần nắm
+- Lý do tại sao quan trọng với nhân viên mới
+
+Bao gồm các mảng: quy trình vận hành, nhân sự & nội quy, an toàn trường học, tuyển sinh & học phí, chuyên môn giáo viên."""
+
 CLARIFY_SYSTEM_PROMPT = """Bạn là trợ lý nội bộ ME School — trường mầm non tư thục tại Việt Nam.
 
 ME SCHOOL CHỈ CÓ:

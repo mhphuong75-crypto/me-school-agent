@@ -14,7 +14,7 @@ import anthropic
 import streamlit as st
 from dotenv import load_dotenv
 
-from prompts import SYSTEM_PROMPT, CLARIFY_SYSTEM_PROMPT
+from prompts import SYSTEM_PROMPT, CLARIFY_SYSTEM_PROMPT, ONBOARDING_QUERY
 from retriever import search, format_context, unique_sources
 
 load_dotenv()
@@ -37,7 +37,7 @@ MAX_TOKENS      = 4096                  # enough for the longest structured answ
 # ── Page setup ─────────────────────────────────────────────────────────────
 
 st.set_page_config(
-    page_title="ME School — Trợ lý nội bộ",
+    page_title="Em gái Sotana — ME School",
     page_icon="🏫",
     layout="centered",
 )
@@ -70,7 +70,7 @@ def check_password() -> bool:
     if st.session_state.get("authenticated"):
         return True
 
-    st.title("🏫 ME School — Trợ lý nội bộ")
+    st.title("Em gái Sotana 🏫")
     pwd = st.text_input("Nhập mật khẩu để tiếp tục:", type="password")
     if st.button("Đăng nhập"):
         if pwd == APP_PASSWORD:
@@ -177,7 +177,7 @@ if "original_query" not in st.session_state:
 
 # ── UI ─────────────────────────────────────────────────────────────────────
 
-st.title("🏫 ME School — Trợ lý nội bộ")
+st.title("Em gái Sotana 🏫")
 st.caption(
     "Hỏi bất kỳ điều gì về quy trình, biểu mẫu hoặc chính sách của ME School. "
     "Tôi chỉ trả lời dựa trên bộ tài liệu vận hành của trường."
@@ -189,8 +189,12 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"], unsafe_allow_html=True)
 
-# --- Chat input ---
+# --- Chat input (or injected query from sidebar buttons) ---
 user_input = st.chat_input("Nhập câu hỏi của bạn…")
+
+# Sidebar buttons can inject a pre-written query; pick it up here
+if not user_input and st.session_state.get("_inject_query"):
+    user_input = st.session_state.pop("_inject_query")
 
 if user_input:
     # Always show the user's message immediately
@@ -198,9 +202,12 @@ if user_input:
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    # If we were waiting for the user to answer clarifying questions,
-    # the new input IS that answer — go straight to answering.
-    skip_clarify = st.session_state.pending_clarification
+    # Skip clarification if: (a) we were already waiting for a clarification answer,
+    # or (b) the query was injected by a sidebar button (already well-formed).
+    skip_clarify = (
+        st.session_state.pending_clarification
+        or user_input == ONBOARDING_QUERY
+    )
     st.session_state.pending_clarification = False
 
     if not skip_clarify:
@@ -317,6 +324,15 @@ with st.sidebar:
             "Để cập nhật tài liệu: chạy `2_build_database.sh` trên máy tính "
             "→ commit & push lên GitHub → app tự cập nhật sau 1–2 phút."
         )
+
+    st.divider()
+    st.subheader("🎓 Onboarding nhân viên mới")
+    st.caption("Tạo kế hoạch tự học 5 ngày từ toàn bộ tài liệu của trường.")
+    if st.button("📋 Tạo kế hoạch onboarding", use_container_width=True):
+        st.session_state.messages = []
+        st.session_state.pending_clarification = False
+        st.session_state["_inject_query"] = ONBOARDING_QUERY
+        st.rerun()
 
     st.divider()
     if st.button("🗑️ Xoá lịch sử chat", use_container_width=True):
