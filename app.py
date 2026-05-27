@@ -187,7 +187,7 @@ st.divider()
 # --- Render conversation history ---
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
-        st.markdown(msg["content"], unsafe_allow_html=True)
+        st.markdown(msg["content"])  # clean text only — no HTML stored in history
 
 # --- Chat input (or injected query from sidebar buttons) ---
 user_input = st.chat_input("Nhập câu hỏi của bạn…")
@@ -265,9 +265,10 @@ if user_input:
         if source_html:
             st.markdown(source_html, unsafe_allow_html=True)
 
-    full_response = answer + ("\n\n" + source_html if source_html else "")
+    # Store ONLY the clean answer text — never the source HTML.
+    # Storing HTML causes Claude to echo the raw tags in future answers.
     st.session_state.messages.append(
-        {"role": "assistant", "content": full_response}
+        {"role": "assistant", "content": answer}
     )
 
 # --- Sidebar ---
