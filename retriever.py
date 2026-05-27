@@ -18,7 +18,27 @@ METADATA_PATH = Path("metadata.json")
 MODEL_NAME    = "paraphrase-multilingual-MiniLM-L12-v2"
 TOP_K              = 8     # semantic candidates to consider
 KEYWORD_TOP_K      = 4     # keyword match results
-SEM_MAX_DISTANCE   = 0.45  # only keep semantic hits with distance ≤ this (similarity ≥ 0.55)
+SEM_MAX_DISTANCE   = 0.50  # only keep semantic hits with distance ≤ this (similarity ≥ 0.50)
+
+# ── Synonym expansion (English → Vietnamese common school terms) ────────────
+# When staff type English terms, these map to the Vietnamese equivalents
+# used in document file names and content.
+SYNONYMS: dict[str, list[str]] = {
+    "onboarding":   ["hội nhập", "nhân viên mới", "lộ trình"],
+    "offboarding":  ["nghỉ việc", "thôi việc", "quy trình nghỉ"],
+    "kpi":          ["đánh giá", "định kì", "kết quả"],
+    "bep":          ["bếp", "bán trú", "nấu ăn", "thực phẩm"],
+    "kitchen":      ["bếp", "bán trú", "nấu ăn", "thực phẩm"],
+    "safety":       ["an toàn", "sức khỏe", "tai nạn", "khẩn cấp"],
+    "tuition":      ["học phí", "tuyển sinh", "thu phí"],
+    "fee":          ["học phí", "tuyển sinh", "thu phí"],
+    "hr":           ["nhân sự", "tuyển dụng", "định biên"],
+    "policy":       ["chính sách", "quy định", "quy trình"],
+    "procedure":    ["quy trình", "quy định", "biểu mẫu"],
+    "finance":      ["tài chính", "kế toán", "ngân sách"],
+    "event":        ["sự kiện", "tổ chức", "hoạt động"],
+    "curriculum":   ["chương trình", "giáo án", "học tập"],
+}
 
 # ── Lazy singletons ────────────────────────────────────────────────────────
 
@@ -50,13 +70,26 @@ def _nfc(s: str) -> str:
 
 # ── Search ─────────────────────────────────────────────────────────────────
 
+def _expand_query(query: str) -> list[str]:
+    """Return extra keywords by expanding English terms to Vietnamese synonyms."""
+    q_lower = query.lower()
+    extra = []
+    for eng, viet_list in SYNONYMS.items():
+        if eng in q_lower:
+            extra.extend(viet_list)
+    return extra
+
+
 def search(query: str, top_k: int = TOP_K) -> list[dict]:
     """Hybrid: keyword filename match first, then cosine similarity."""
     model             = _get_model()
     vectors, records  = _get_index()
 
-    # ── 1. Keyword match on filename ────────────────────────────────────────
-    keywords     = [w for w in _nfc(query).split() if len(w) >= 3]
+    # ── 1. Keyword match on filename + text ────────────────────────────────
+    base_keywords = [w for w in _nfc(query).split() if len(w) >= 3]
+    extra_keywords = [_nfc(w) for w in _expand_query(query)]
+    keywords = list(dict.fromkeys(base_keywords + extra_keywords))  # dedupe, keep order
+
     seen_paths   = set()
     kw_hits      = []
 
@@ -67,7 +100,7 @@ def search(query: str, top_k: int = TOP_K) -> list[dict]:
             text       = _nfc(rec.get("text", ""))
             fname_hits = sum(1 for k in keywords if k in fname)
             text_hits  = sum(1 for k in keywords if k in text)
-            if fname_hits > 0 or text_hits >= 2:
+            if fname_hits > 0 or text_hits >= 1:   # lowered from 2 → 1 for text hits
                 scored.append((-(fname_hits * 3 + text_hits), i))
 
         scored.sort(key=lambda x: x[0])
