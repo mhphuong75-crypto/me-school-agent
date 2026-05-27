@@ -95,19 +95,19 @@ def get_client() -> anthropic.Anthropic:
 
 def needs_clarification(query: str) -> tuple[bool, list[str]]:
     """
-    Ask Claude (with CLARIFY_SYSTEM_PROMPT) whether the query needs
-    clarifying questions.  Returns (bool, list_of_questions).
+    Ask Claude (Haiku) if the query is ambiguous enough to warrant clarification.
+    Only called when search quality is already confirmed poor.
+    Returns (bool, list_of_questions).
     """
     client = get_client()
     try:
         resp = client.messages.create(
-            model=MODEL_FAST,   # Haiku: ~5x faster for simple classification
-            max_tokens=128,
+            model=MODEL_FAST,
+            max_tokens=200,   # enough for JSON + one question
             system=CLARIFY_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": query}],
         )
         raw = resp.content[0].text.strip()
-        # Strip markdown code fences if present
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):
@@ -118,27 +118,42 @@ def needs_clarification(query: str) -> tuple[bool, list[str]]:
         return False, []
 
 
+def _search_is_good(hits: list[dict]) -> bool:
+    """
+    Returns True if search results are strong enough to answer directly
+    without asking for clarification.
+    Strong = at least 1 keyword hit, OR 3+ semantic hits.
+    """
+    if not hits:
+        return False
+    keyword_hits = [h for h in hits if h.get("score", 1.0) == 0.0]
+    if keyword_hits:
+        return True       # filename/text keyword match → always good
+    return len(hits) >= 3  # 3+ semantic hits → acceptable
+
+
 # ── Retrieval ──────────────────────────────────────────────────────────────
 
-def get_retrieval(conversation: list[dict]) -> tuple[str, list[dict]]:
+def get_retrieval(conversation: list[dict], extra_query: str = "") -> tuple[str, list[dict], list[dict]]:
     """
     Retrieve relevant chunks for the latest user message.
-    Returns (context_string, source_list).
+    extra_query: prepend original query when this is a clarification follow-up.
+    Returns (context_string, source_list, raw_hits).
     """
     last_user_msg = next(
         (m["content"] for m in reversed(conversation) if m["role"] == "user"),
         "",
     )
+    search_query = (extra_query + " " + last_user_msg).strip() if extra_query else last_user_msg
 
-    hits    = search(last_user_msg)
+    hits    = search(search_query)
     context = format_context(hits)
     sources = unique_sources(hits)
 
-    # If nothing found, tell Claude explicitly so it doesn't hallucinate
     if not hits:
         context = "Không tìm thấy tài liệu nào liên quan đến câu hỏi này."
 
-    return context, sources
+    return context, sources, hits
 
 
 # ── Answer streaming ───────────────────────────────────────────────────────
@@ -202,44 +217,47 @@ if user_input:
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    # Skip clarification if: (a) we were already waiting for a clarification answer,
-    # or (b) the query was injected by a sidebar button (already well-formed).
-    skip_clarify = (
-        st.session_state.pending_clarification
-        or user_input == ONBOARDING_QUERY
-    )
+    # Was this a reply to a clarifying question?
+    was_clarifying = st.session_state.pending_clarification
+    original_q     = st.session_state.original_query if was_clarifying else ""
     st.session_state.pending_clarification = False
+    st.session_state.original_query        = ""
 
-    if not skip_clarify:
-        # Check whether the query needs clarification
-        with st.spinner("Đang kiểm tra câu hỏi…"):
-            clarify, questions = needs_clarification(user_input)
+    # Sidebar-injected queries (e.g. onboarding button) skip clarification entirely
+    is_injected = (user_input == ONBOARDING_QUERY)
 
-        if clarify and questions:
-            # Build the clarifying message
-            clarify_text = "Để tôi có thể tìm đúng tài liệu cho bạn, xin hỏi thêm:\n\n"
-            clarify_text += f"• {questions[0]}\n"
-
-            st.session_state.messages.append(
-                {"role": "assistant", "content": clarify_text}
-            )
-            st.session_state.pending_clarification = True
-            st.session_state.original_query = user_input
-
-            with st.chat_message("assistant"):
-                st.markdown(clarify_text)
-
-            st.stop()
-
-    # --- Retrieve relevant docs (fast — shown under spinner) ---
+    # ── Step 1: Search first ────────────────────────────────────────────────
     with st.spinner("Đang tìm kiếm tài liệu…"):
         try:
-            context, sources = get_retrieval(st.session_state.messages)
+            context, sources, hits = get_retrieval(
+                st.session_state.messages,
+                extra_query=original_q,   # combine original + clarification answer
+            )
         except Exception as e:
             context = "Không tìm thấy tài liệu nào liên quan đến câu hỏi này."
             sources = []
+            hits    = []
 
-    # Build source footer HTML
+    # ── Step 2: Clarify only if search is weak AND query is short/ambiguous ─
+    should_try_clarify = (
+        not is_injected
+        and not was_clarifying          # don't ask twice
+        and not _search_is_good(hits)   # only if results are poor
+        and len(user_input.split()) <= 4  # only for short / possibly vague queries
+    )
+
+    if should_try_clarify:
+        clarify, questions = needs_clarification(user_input)
+        if clarify and questions:
+            clarify_text = f"👉 {questions[0]}"
+            st.session_state.messages.append({"role": "assistant", "content": clarify_text})
+            st.session_state.pending_clarification = True
+            st.session_state.original_query        = user_input
+            with st.chat_message("assistant"):
+                st.markdown(clarify_text)
+            st.stop()
+
+    # ── Step 3: Build source footer HTML ────────────────────────────────────
     source_html = ""
     if sources:
         links = "".join(
@@ -254,7 +272,7 @@ if user_input:
                 + "</div>"
             )
 
-    # --- Stream the answer — user sees text within ~2 s ---
+    # ── Step 4: Stream the answer ────────────────────────────────────────────
     with st.chat_message("assistant"):
         try:
             answer = st.write_stream(stream_answer(st.session_state.messages, context))
