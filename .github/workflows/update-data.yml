@@ -1,0 +1,57 @@
+name: "Cap nhat du lieu Agent Sotana"
+
+on:
+  push:
+    paths:
+      - 'documents/**'
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  rebuild-vectors:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install sentence-transformers numpy python-docx pdfplumber openpyxl python-pptx python-dotenv
+
+      - name: Kiem tra tai lieu
+        run: |
+          if [ ! -d "documents" ] || [ -z "$(ls -A documents/)" ]; then
+            echo "::error::Thu muc documents/ trong hoac khong ton tai."
+            exit 1
+          fi
+          find documents/ -type f | head -20
+
+      - name: Chay ingest.py
+        env:
+          MANUAL_ROOT: ./documents
+        run: python ingest.py --reset
+
+      - name: Kiem tra ket qua
+        run: ls -lh vectors.npy metadata.json
+
+      - name: Commit va push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add vectors.npy metadata.json
+          if git diff --cached --quiet; then
+            echo "Khong co thay doi."
+          else
+            git commit -m "Auto-update data"
+            git push
+            echo "Da push! App se tu deploy trong 1-2 phut."
+          fi
