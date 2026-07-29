@@ -1,11 +1,11 @@
 """
 ME School Manual — Retriever
-Hybrid search: numpy cosine similarity + keyword filename matching.
-No ChromaDB — uses vectors.npy + metadata.json (git-friendly).
+Hybrid search: numpy cosine similarity + keyword filename matching + LLM TOC.
+No ChromaDB — uses vectors.npy + metadata.json + toc.json (git-friendly).
 """
 
 from __future__ import annotations
-import json
+import json, os
 import unicodedata
 import numpy as np
 from pathlib import Path
@@ -15,7 +15,9 @@ load_dotenv()
 
 VECTORS_PATH  = Path("vectors.npy")
 METADATA_PATH = Path("metadata.json")
+TOC_PATH      = Path("toc.json")
 MODEL_NAME    = "paraphrase-multilingual-MiniLM-L12-v2"
+TOC_MODEL     = "claude-haiku-4-5"
 TOP_K              = 8     # semantic candidates to consider
 KEYWORD_TOP_K      = 4     # keyword match results
 SEM_MAX_DISTANCE   = 0.50  # only keep semantic hits with distance ≤ this (similarity ≥ 0.50)
@@ -62,6 +64,16 @@ def _get_index():
         with open(METADATA_PATH, encoding="utf-8") as f:
             _records = json.load(f)
     return _vectors, _records
+
+
+_toc = None
+
+def _get_toc() -> list | None:
+    global _toc
+    if _toc is None and TOC_PATH.exists():
+        with open(TOC_PATH, encoding="utf-8") as f:
+            _toc = json.load(f)
+    return _toc
 
 
 def _nfc(s: str) -> str:
@@ -135,6 +147,93 @@ def search(query: str, top_k: int = TOP_K) -> list[dict]:
             break
 
     return kw_hits + sem_hits
+
+
+# ── TOC-based search (LLM-powered) ────────────────────────────────────────
+
+def search_toc(query: str, api_key: str = "") -> list[dict]:
+    """
+    Use Claude Haiku to pick relevant files from toc.json, then return
+    all chunks from those files. Falls back to empty list on any failure.
+    """
+    toc = _get_toc()
+    if not toc:
+        return []
+
+    key = api_key or os.getenv("ANTHROPIC_API_KEY", "")
+    if not key:
+        return []
+
+    # Build compact TOC text for the prompt
+    toc_text_parts = []
+    for i, entry in enumerate(toc):
+        qs = "; ".join(entry.get("questions", [])[:5])
+        toc_text_parts.append(
+            f"[{i}] {entry['file_path']}\n"
+            f"    Tóm tắt: {entry.get('summary', 'N/A')}\n"
+            f"    Câu hỏi: {qs}"
+        )
+    toc_text = "\n".join(toc_text_parts)
+
+    prompt = f"""Bạn là hệ thống tìm kiếm tài liệu ME School. Dưới đây là danh mục tài liệu:
+
+{toc_text}
+
+CÂU HỎI CỦA NHÂN VIÊN: {query}
+
+NHIỆM VỤ: Chọn các tài liệu CÓ KHẢ NĂNG chứa câu trả lời. Trả về JSON:
+{{"file_indices": [danh sách số thứ tự tài liệu, ví dụ [0, 5, 12]]}}
+
+QUY TẮC:
+- Chọn 1-5 tài liệu liên quan nhất
+- Ưu tiên tài liệu có câu hỏi mẫu gần với câu hỏi nhân viên
+- Nếu không chắc, chọn rộng hơn (nhiều file hơn)
+- CHỈ trả về JSON, không text khác"""
+
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=key)
+        resp = client.messages.create(
+            model=TOC_MODEL,
+            max_tokens=200,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = resp.content[0].text.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        if raw.endswith("```"):
+            raw = raw[:-3]
+        data = json.loads(raw.strip())
+        indices = data.get("file_indices", [])
+
+        # Collect file_paths from selected TOC entries
+        selected_paths = set()
+        for idx in indices:
+            if 0 <= idx < len(toc):
+                selected_paths.add(toc[idx]["file_path"])
+
+        if not selected_paths:
+            return []
+
+        # Return all chunks matching those file_paths
+        _, records = _get_index()
+        hits = []
+        for rec in records:
+            if rec.get("file_path", "") in selected_paths:
+                hits.append({**rec, "score": 0.0})  # score 0 = high confidence
+
+        return hits
+
+    except Exception as e:
+        print(f"TOC search error: {e}")
+        return []
+
+
+def has_toc() -> bool:
+    """Check if toc.json exists and is loaded."""
+    return _get_toc() is not None and len(_get_toc()) > 0
 
 
 # ── Formatting ─────────────────────────────────────────────────────────────

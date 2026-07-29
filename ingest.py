@@ -12,11 +12,15 @@ Usage:
     python ingest.py --reset   # wipe and rebuild from scratch
 """
 
-import os, sys, tempfile
+import os, sys, tempfile, json, time
 from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# ── Anthropic (for TOC generation) ────────────────────────────────────────
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+TOC_MODEL = "claude-haiku-4-5"
 
 # ── Config ─────────────────────────────────────────────────────────────────
 
@@ -110,6 +114,70 @@ def chunk(text: str, size=CHUNK_WORDS, overlap=CHUNK_OVERLAP):
     return [c for c in chunks if len(c.strip()) > 30]
 
 
+# ── TOC generation (LLM-powered) ──────────────────────────────────────────
+
+def _get_anthropic_client():
+    """Lazy init Anthropic client."""
+    import anthropic
+    return anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+def generate_toc_entry(text: str, file_name: str, file_path: str) -> dict | None:
+    """
+    Call Claude Haiku to generate a summary + answerable questions for one file.
+    Returns dict with summary + questions, or None on failure.
+    """
+    if not ANTHROPIC_API_KEY:
+        return None
+
+    # Truncate very long texts to ~8000 words to stay within Haiku context
+    words = text.split()
+    truncated = " ".join(words[:8000]) if len(words) > 8000 else text
+
+    prompt = f"""Bạn là trợ lý phân tích tài liệu vận hành của ME School (trường mầm non).
+
+FILE: {file_name}
+PATH: {file_path}
+
+NỘI DUNG:
+{truncated}
+
+NHIỆM VỤ: Phân tích tài liệu trên và trả về JSON (CHỈ JSON, không text khác):
+{{
+  "summary": "Tóm tắt nội dung chính của tài liệu trong 2-3 câu bằng tiếng Việt",
+  "questions": ["Liệt kê 5-10 câu hỏi mà tài liệu này CÓ THỂ trả lời được, viết bằng tiếng Việt, dùng ngôn ngữ tự nhiên như cách nhân viên sẽ hỏi"]
+}}
+
+YÊU CẦU cho questions:
+- Viết như cách nhân viên thật sẽ hỏi (ví dụ: "Quy trình xin nghỉ phép như thế nào?")
+- Bao gồm cả câu hỏi ngắn lẫn câu hỏi chi tiết
+- Nếu tài liệu có nhiều chủ đề, mỗi chủ đề ít nhất 1 câu hỏi
+- Dùng từ khóa quan trọng trong tài liệu"""
+
+    try:
+        client = _get_anthropic_client()
+        resp = client.messages.create(
+            model=TOC_MODEL,
+            max_tokens=1000,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = resp.content[0].text.strip()
+        # Clean markdown code blocks if present
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        if raw.endswith("```"):
+            raw = raw[:-3]
+        data = json.loads(raw.strip())
+        return {
+            "summary": data.get("summary", ""),
+            "questions": data.get("questions", []),
+        }
+    except Exception as e:
+        print(f"  WARN TOC generation failed for {file_name}: {e}")
+        return None
+
+
 # ── SharePoint / Microsoft Graph helpers ──────────────────────────────────
 
 def _graph_token() -> str:
@@ -187,13 +255,13 @@ def _download(url: str, dest: Path):
 # ── Main — SharePoint mode ─────────────────────────────────────────────────
 
 def main_sharepoint():
-    import json
     import numpy as np
     from sentence_transformers import SentenceTransformer
 
     print("Mode     : SharePoint (Microsoft Graph API)")
     print(f"Site     : {SP_SITE_URL}")
     print(f"Folder   : {SP_FOLDER or '(root of document library)'}")
+    print(f"TOC      : {'enabled (Haiku)' if ANTHROPIC_API_KEY else 'disabled (no API key)'}")
     print()
 
     print("Authenticating with Microsoft…")
@@ -217,6 +285,8 @@ def main_sharepoint():
     print("Model ready.\n")
 
     all_vectors, all_records = [], []
+    toc_entries = []
+    toc_success, toc_fail = 0, 0
 
     with tempfile.TemporaryDirectory() as tmpdir:
         for idx, f in enumerate(files, 1):
@@ -248,24 +318,47 @@ def main_sharepoint():
                     "file_name": f["name"],
                     "file_path": f["path"],
                     "folder":    folder_label,
-                    "url":       f["web_url"],   # real SharePoint link
+                    "url":       f["web_url"],
                 })
 
-            print(f"  → {len(chunks)} chunks indexed")
+            # ── TOC generation ──
+            if ANTHROPIC_API_KEY:
+                toc = generate_toc_entry(text, f["name"], f["path"])
+                if toc:
+                    toc_entries.append({
+                        "file_name": f["name"],
+                        "file_path": f["path"],
+                        "folder":    folder_label,
+                        "url":       f["web_url"],
+                        "summary":   toc["summary"],
+                        "questions": toc["questions"],
+                        "word_count": len(text.split()),
+                    })
+                    toc_success += 1
+                    print(f"  → {len(chunks)} chunks + TOC ✓")
+                else:
+                    toc_fail += 1
+                    print(f"  → {len(chunks)} chunks (TOC failed)")
+                # Rate limit: small delay between Haiku calls
+                time.sleep(0.3)
+            else:
+                print(f"  → {len(chunks)} chunks indexed")
 
-    _save(all_vectors, all_records)
+    if ANTHROPIC_API_KEY:
+        print(f"\nTOC: {toc_success} success, {toc_fail} failed out of {toc_success + toc_fail} files")
+    _save(all_vectors, all_records, toc_entries)
 
 
 # ── Main — Local mode ──────────────────────────────────────────────────────
 
 def main_local():
-    import json
     import numpy as np
     from sentence_transformers import SentenceTransformer
 
     print("Mode     : Local folder")
     print(f"Root     : {MANUAL_ROOT}")
     print(f"URL base : {ONEDRIVE_BASE or '(not set — file:// links used)'}")
+    print(f"TOC      : {'enabled (Haiku)' if ANTHROPIC_API_KEY else 'disabled (no API key)'}")
     print()
 
     if not MANUAL_ROOT.exists():
@@ -286,6 +379,8 @@ def main_local():
     print("Model ready.\n")
 
     all_vectors, all_records = [], []
+    toc_entries = []
+    toc_success, toc_fail = 0, 0
 
     for idx, fpath in enumerate(files, 1):
         rel    = fpath.relative_to(MANUAL_ROOT)
@@ -315,19 +410,41 @@ def main_local():
                 "url":       url,
             })
 
-        print(f"  → {len(chunks)} chunks indexed")
+        # ── TOC generation ──
+        if ANTHROPIC_API_KEY:
+            toc = generate_toc_entry(text, fpath.name, str(rel))
+            if toc:
+                toc_entries.append({
+                    "file_name": fpath.name,
+                    "file_path": str(rel),
+                    "folder":    folder,
+                    "url":       url,
+                    "summary":   toc["summary"],
+                    "questions": toc["questions"],
+                    "word_count": len(text.split()),
+                })
+                toc_success += 1
+                print(f"  → {len(chunks)} chunks + TOC ✓")
+            else:
+                toc_fail += 1
+                print(f"  → {len(chunks)} chunks (TOC failed)")
+            time.sleep(0.3)
+        else:
+            print(f"  → {len(chunks)} chunks indexed")
 
-    _save(all_vectors, all_records)
+    if ANTHROPIC_API_KEY:
+        print(f"\nTOC: {toc_success} success, {toc_fail} failed out of {toc_success + toc_fail} files")
+    _save(all_vectors, all_records, toc_entries)
 
 
 # ── Save ───────────────────────────────────────────────────────────────────
 
-def _save(all_vectors: list, all_records: list):
-    import json
+def _save(all_vectors: list, all_records: list, toc_entries: list | None = None):
     import numpy as np
 
     vectors_path  = Path("vectors.npy")
     metadata_path = Path("metadata.json")
+    toc_path      = Path("toc.json")
 
     np.save(str(vectors_path), np.array(all_vectors, dtype="float32"))
     with open(metadata_path, "w", encoding="utf-8") as f:
@@ -336,6 +453,13 @@ def _save(all_vectors: list, all_records: list):
     print(f"\n✓ Done.  Total chunks : {len(all_records)}")
     print(f"  Saved  : {vectors_path}  ({vectors_path.stat().st_size/1024/1024:.1f} MB)")
     print(f"  Saved  : {metadata_path} ({metadata_path.stat().st_size/1024/1024:.1f} MB)")
+
+    if toc_entries:
+        with open(toc_path, "w", encoding="utf-8") as f:
+            json.dump(toc_entries, f, ensure_ascii=False, indent=2)
+        print(f"  Saved  : {toc_path}  ({toc_path.stat().st_size/1024:.0f} KB, {len(toc_entries)} files)")
+    else:
+        print("  TOC    : not generated (no API key or all failed)")
 
 
 # ── Entry point ────────────────────────────────────────────────────────────

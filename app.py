@@ -15,7 +15,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from prompts import SYSTEM_PROMPT, CLARIFY_SYSTEM_PROMPT, ONBOARDING_QUERY
-from retriever import search, format_context, unique_sources
+from retriever import search, search_toc, has_toc, format_context, unique_sources
 
 load_dotenv()
 
@@ -137,6 +137,7 @@ def _search_is_good(hits: list[dict]) -> bool:
 def get_retrieval(conversation: list[dict], extra_query: str = "") -> tuple[str, list[dict], list[dict]]:
     """
     Retrieve relevant chunks for the latest user message.
+    Strategy: hybrid search first → if weak results AND toc.json available, use TOC search.
     extra_query: prepend original query when this is a clarification follow-up.
     Returns (context_string, source_list, raw_hits).
     """
@@ -146,7 +147,15 @@ def get_retrieval(conversation: list[dict], extra_query: str = "") -> tuple[str,
     )
     search_query = (extra_query + " " + last_user_msg).strip() if extra_query else last_user_msg
 
-    hits    = search(search_query)
+    # Step 1: Try hybrid search (fast, no API call)
+    hits = search(search_query)
+
+    # Step 2: If hybrid search is weak, try TOC search (uses Haiku API)
+    if not _search_is_good(hits) and has_toc():
+        toc_hits = search_toc(search_query, api_key=ANTHROPIC_KEY)
+        if toc_hits:
+            hits = toc_hits  # TOC found better results
+
     context = format_context(hits)
     sources = unique_sources(hits)
 
