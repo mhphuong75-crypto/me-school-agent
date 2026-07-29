@@ -23,15 +23,16 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install sentence-transformers numpy python-docx pdfplumber openpyxl python-pptx python-dotenv msal requests
+          pip install sentence-transformers numpy python-docx pdfplumber openpyxl python-pptx python-dotenv msal requests anthropic
 
-      - name: Chay ingest.py (lay du lieu tu SharePoint)
+      - name: Chay ingest.py (lay du lieu tu SharePoint + tao TOC)
         env:
           SHAREPOINT_TENANT_ID: ${{ secrets.SHAREPOINT_TENANT_ID }}
           SHAREPOINT_CLIENT_ID: ${{ secrets.SHAREPOINT_CLIENT_ID }}
           SHAREPOINT_CLIENT_SECRET: ${{ secrets.SHAREPOINT_CLIENT_SECRET }}
           SHAREPOINT_SITE_URL: ${{ secrets.SHAREPOINT_SITE_URL }}
           SHAREPOINT_FOLDER: ${{ secrets.SHAREPOINT_FOLDER }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           python ingest.py --reset
 
@@ -39,6 +40,14 @@ jobs:
         run: |
           echo "=== Ket qua ==="
           ls -lh vectors.npy metadata.json
+          if [ -f toc.json ]; then
+            ls -lh toc.json
+            echo ""
+            echo "TOC entries:"
+            python -c "import json; toc=json.load(open('toc.json')); print(f'  {len(toc)} files in TOC')"
+          else
+            echo "  toc.json: NOT generated (check ANTHROPIC_API_KEY)"
+          fi
           echo ""
           echo "So luong chunks:"
           python -c "import json; data=json.load(open('metadata.json')); print(f'  {len(data)} chunks tu {len(set(d[\"file_name\"] for d in data))} files')"
@@ -48,12 +57,15 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add vectors.npy metadata.json
+          if [ -f toc.json ]; then
+            git add toc.json
+          fi
 
           # Chi commit neu co thay doi
           if git diff --cached --quiet; then
             echo "Khong co thay doi nao trong du lieu."
           else
-            git commit -m "Auto-update data from SharePoint $(date +'%Y-%m-%d %H:%M')"
+            git commit -m "Auto-update data + TOC from SharePoint $(date +'%Y-%m-%d %H:%M')"
             git push
             echo "Da push thanh cong! App se tu deploy trong 1-2 phut."
           fi
