@@ -174,7 +174,7 @@ YÊU CẦU cho questions:
             "questions": data.get("questions", []),
         }
     except Exception as e:
-        print(f"  WARN TOC generation failed for {file_name}: {e}")
+        print(f"  WARN TOC generation failed for {file_name}: {type(e).__name__}: {e}")
         return None
 
 
@@ -321,8 +321,9 @@ def main_sharepoint():
                     "url":       f["web_url"],
                 })
 
-            # ── TOC generation ──
-            if ANTHROPIC_API_KEY:
+            # ── TOC generation (with fail-fast) ──
+            toc_enabled = ANTHROPIC_API_KEY and not (toc_fail >= 3 and toc_success == 0)
+            if toc_enabled:
                 toc = generate_toc_entry(text, f["name"], f["path"])
                 if toc:
                     toc_entries.append({
@@ -338,7 +339,11 @@ def main_sharepoint():
                     print(f"  → {len(chunks)} chunks + TOC ✓")
                 else:
                     toc_fail += 1
-                    print(f"  → {len(chunks)} chunks (TOC failed)")
+                    if toc_fail >= 3 and toc_success == 0:
+                        print(f"  → {len(chunks)} chunks (TOC failed)")
+                        print(f"  ⚠ TOC DISABLED: first {toc_fail} calls all failed — skipping TOC for remaining files")
+                    else:
+                        print(f"  → {len(chunks)} chunks (TOC failed)")
                 # Rate limit: small delay between Haiku calls
                 time.sleep(0.3)
             else:
