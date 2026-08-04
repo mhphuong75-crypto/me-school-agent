@@ -14,6 +14,7 @@ Usage:
 
 import os, sys, tempfile, json, time
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -261,7 +262,7 @@ def main_sharepoint():
     print("Mode     : SharePoint (Microsoft Graph API)")
     print(f"Site     : {SP_SITE_URL}")
     print(f"Folder   : {SP_FOLDER or '(root of document library)'}")
-    print(f"TOC      : {'enabled (Haiku)' if ANTHROPIC_API_KEY else 'disabled (no API key)'}")
+    print(f"TOC      : {'enabled (Haiku, concurrent)' if ANTHROPIC_API_KEY else 'disabled (no API key)'}")
     print()
 
     print("Authenticating with Microsoft…")
@@ -285,8 +286,12 @@ def main_sharepoint():
     print("Model ready.\n")
 
     all_vectors, all_records = [], []
-    toc_entries = []
-    toc_success, toc_fail = 0, 0
+    toc_jobs = []  # collect (text, file_name, file_path, folder, url, word_count) for TOC pass
+
+    # ── PASS 1: Download, extract, chunk, embed (no TOC yet) ──
+    print("=" * 60)
+    print("PASS 1: Download + Embed")
+    print("=" * 60)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         for idx, f in enumerate(files, 1):
@@ -321,36 +326,87 @@ def main_sharepoint():
                     "url":       f["web_url"],
                 })
 
-            # ── TOC generation (with fail-fast) ──
-            toc_enabled = ANTHROPIC_API_KEY and not (toc_fail >= 3 and toc_success == 0)
-            if toc_enabled:
-                toc = generate_toc_entry(text, f["name"], f["path"])
-                if toc:
-                    toc_entries.append({
-                        "file_name": f["name"],
-                        "file_path": f["path"],
-                        "folder":    folder_label,
-                        "url":       f["web_url"],
-                        "summary":   toc["summary"],
-                        "questions": toc["questions"],
-                        "word_count": len(text.split()),
-                    })
-                    toc_success += 1
-                    print(f"  → {len(chunks)} chunks + TOC ✓")
-                else:
-                    toc_fail += 1
-                    if toc_fail >= 3 and toc_success == 0:
-                        print(f"  → {len(chunks)} chunks (TOC failed)")
-                        print(f"  ⚠ TOC DISABLED: first {toc_fail} calls all failed — skipping TOC for remaining files")
-                    else:
-                        print(f"  → {len(chunks)} chunks (TOC failed)")
-                # Rate limit: small delay between Haiku calls
-                time.sleep(0.3)
-            else:
-                print(f"  → {len(chunks)} chunks indexed")
+            # Save text info for TOC generation in pass 2
+            if ANTHROPIC_API_KEY:
+                toc_jobs.append({
+                    "text": text,
+                    "file_name": f["name"],
+                    "file_path": f["path"],
+                    "folder": folder_label,
+                    "url": f["web_url"],
+                    "word_count": len(text.split()),
+                })
 
-    if ANTHROPIC_API_KEY:
+            print(f"  → {len(chunks)} chunks")
+
+    print(f"\nPass 1 done: {len(all_records)} chunks from {len(set(r['file_name'] for r in all_records))} files.\n")
+
+    # ── PASS 2: Concurrent TOC generation ──
+    toc_entries = []
+    if ANTHROPIC_API_KEY and toc_jobs:
+        TOC_WORKERS = 10  # concurrent Haiku calls
+        print("=" * 60)
+        print(f"PASS 2: TOC generation ({len(toc_jobs)} files, {TOC_WORKERS} concurrent workers)")
+        print("=" * 60)
+
+        toc_success, toc_fail = 0, 0
+
+        def _toc_worker(job):
+            """Worker function for concurrent TOC generation."""
+            toc = generate_toc_entry(job["text"], job["file_name"], job["file_path"])
+            if toc:
+                return {
+                    "file_name":  job["file_name"],
+                    "file_path":  job["file_path"],
+                    "folder":     job["folder"],
+                    "url":        job["url"],
+                    "summary":    toc["summary"],
+                    "questions":  toc["questions"],
+                    "word_count": job["word_count"],
+                }
+            return None
+
+        # Fail-fast: test first 3 files sequentially
+        test_count = min(3, len(toc_jobs))
+        test_ok = 0
+        for i in range(test_count):
+            result = _toc_worker(toc_jobs[i])
+            if result:
+                toc_entries.append(result)
+                test_ok += 1
+                toc_success += 1
+                print(f"  TOC test [{i+1}/{test_count}] ✓ {toc_jobs[i]['file_name']}")
+            else:
+                toc_fail += 1
+                print(f"  TOC test [{i+1}/{test_count}] ✗ {toc_jobs[i]['file_name']}")
+
+        if test_ok == 0:
+            print(f"\n⚠ TOC DISABLED: first {test_count} calls all failed — skipping TOC")
+        else:
+            remaining = toc_jobs[test_count:]
+            print(f"\n  Test passed ({test_ok}/{test_count}). Processing {len(remaining)} remaining files concurrently…\n")
+
+            with ThreadPoolExecutor(max_workers=TOC_WORKERS) as pool:
+                futures = {pool.submit(_toc_worker, job): job for job in remaining}
+                for done_count, future in enumerate(as_completed(futures), test_count + 1):
+                    job = futures[future]
+                    try:
+                        result = future.result()
+                        if result:
+                            toc_entries.append(result)
+                            toc_success += 1
+                        else:
+                            toc_fail += 1
+                    except Exception as e:
+                        toc_fail += 1
+                        print(f"  WARN TOC error for {job['file_name']}: {type(e).__name__}: {e}")
+
+                    # Progress every 50 files
+                    if done_count % 50 == 0 or done_count == len(toc_jobs):
+                        print(f"  TOC progress: {done_count}/{len(toc_jobs)} (✓{toc_success} ✗{toc_fail})")
+
         print(f"\nTOC: {toc_success} success, {toc_fail} failed out of {toc_success + toc_fail} files")
+
     _save(all_vectors, all_records, toc_entries)
 
 
