@@ -40,6 +40,7 @@ SYNONYMS: dict[str, list[str]] = {
     "finance":      ["tài chính", "kế toán", "ngân sách"],
     "event":        ["sự kiện", "tổ chức", "hoạt động"],
     "curriculum":   ["chương trình", "giáo án", "học tập"],
+    "teacher":      ["giáo viên", "cô giáo"],
 }
 
 # ── Lazy singletons ────────────────────────────────────────────────────────
@@ -80,6 +81,12 @@ def _nfc(s: str) -> str:
     return unicodedata.normalize("NFC", s).lower()
 
 
+def _strip_accents(s: str) -> str:
+    """Remove Vietnamese diacritics so 'giáo' matches 'giao' in filenames."""
+    nfkd = unicodedata.normalize("NFKD", s)
+    return "".join(c for c in nfkd if not unicodedata.combining(c)).lower()
+
+
 # ── Search ─────────────────────────────────────────────────────────────────
 
 def _expand_query(query: str) -> list[str]:
@@ -106,11 +113,15 @@ def search(query: str, top_k: int = TOP_K) -> list[dict]:
     kw_hits      = []
 
     if keywords:
+        keywords_stripped = [_strip_accents(k) for k in keywords]
         scored = []
         for i, rec in enumerate(records):
             fname      = _nfc(rec.get("file_name", ""))
+            fname_bare = _strip_accents(rec.get("file_name", ""))
             text       = _nfc(rec.get("text", ""))
-            fname_hits = sum(1 for k in keywords if k in fname)
+            # Accent-insensitive filename match (giáo matches giao)
+            fname_hits = sum(1 for k, ks in zip(keywords, keywords_stripped)
+                            if k in fname or ks in fname_bare)
             text_hits  = sum(1 for k in keywords if k in text)
             if fname_hits > 0 or text_hits >= 1:   # lowered from 2 → 1 for text hits
                 scored.append((-(fname_hits * 3 + text_hits), i))

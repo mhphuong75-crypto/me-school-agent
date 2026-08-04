@@ -137,7 +137,7 @@ def _search_is_good(hits: list[dict]) -> bool:
 def get_retrieval(conversation: list[dict], extra_query: str = "") -> tuple[str, list[dict], list[dict]]:
     """
     Retrieve relevant chunks for the latest user message.
-    Strategy: hybrid search first → if weak results AND toc.json available, use TOC search.
+    Strategy: hybrid search + TOC search (always), merge & deduplicate.
     extra_query: prepend original query when this is a clarification follow-up.
     Returns (context_string, source_list, raw_hits).
     """
@@ -147,14 +147,20 @@ def get_retrieval(conversation: list[dict], extra_query: str = "") -> tuple[str,
     )
     search_query = (extra_query + " " + last_user_msg).strip() if extra_query else last_user_msg
 
-    # Step 1: Try hybrid search (fast, no API call)
+    # Step 1: Hybrid search (fast, no API call)
     hits = search(search_query)
 
-    # Step 2: If hybrid search is weak, try TOC search (uses Haiku API)
-    if not _search_is_good(hits) and has_toc():
+    # Step 2: Always run TOC search alongside (uses Haiku API)
+    # TOC search understands document meaning, not just keyword overlap
+    if has_toc():
         toc_hits = search_toc(search_query, api_key=ANTHROPIC_KEY)
         if toc_hits:
-            hits = toc_hits  # TOC found better results
+            # Merge: add TOC results that aren't already in keyword/cosine hits
+            existing_paths = {h.get("file_path", "") for h in hits}
+            for th in toc_hits:
+                if th.get("file_path", "") not in existing_paths:
+                    hits.append(th)
+                    existing_paths.add(th.get("file_path", ""))
 
     context = format_context(hits)
     sources = unique_sources(hits)
