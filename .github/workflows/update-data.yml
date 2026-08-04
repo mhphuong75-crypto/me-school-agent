@@ -50,7 +50,7 @@ jobs:
           fi
           echo ""
           echo "So luong chunks:"
-          python -c "import json; data=json.load(open('metadata.json')); print(f'  {len(data)} chunks tu {len(set(d[\\"file_name\\"] for d in data))} files')"
+          python -c "import json; data=json.load(open('metadata.json')); files=set(d['file_name'] for d in data); print(f'  {len(data)} chunks tu {len(files)} files')"
 
       - name: Commit va push
         run: |
@@ -65,7 +65,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "Khong co thay doi nao trong du lieu."
           else
-            git commit -m "Auto-update data + TOC from SharePoint \$(date +'%Y-%m-%d %H:%M')"
+            git commit -m "Auto-update data + TOC from SharePoint $(date +'%Y-%m-%d %H:%M')"
             git push
             echo "Da push thanh cong! App se tu deploy trong 1-2 phut."
           fi
