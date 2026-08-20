@@ -1,0 +1,42 @@
+[
+  {
+    "query": "onboarding dành cho giáo viên về MET là gì",
+    "expect_file": "Bo_100_cau_hoi",
+    "description": "MET onboarding Q&A for new teachers"
+  },
+  {
+    "query": "quy trình xử lý sốc phản vệ",
+    "expect_file": "sốc phản vệ",
+    "description": "Anaphylaxis emergency protocol"
+  },
+  {
+    "query": "quản lý dị ứng tại trường mầm non",
+    "expect_file": "dị ứng",
+    "description": "Allergy management guide"
+  },
+  {
+    "query": "quy trình xin nghỉ phép",
+    "expect_file": "chế độ chính sách",
+    "description": "Leave request in policy document"
+  },
+  {
+    "query": "quy trình tuyển dụng nhân sự",
+    "expect_file": "tuyển dụng",
+    "description": "HR recruitment process"
+  },
+  {
+    "query": "xử lý khi trẻ bị hóc dị vật",
+    "expect_file": "dị vật",
+    "description": "Choking emergency procedure"
+  },
+  {
+    "query": "quy định về đồng phục ME School",
+    "expect_file": "đồng phục",
+    "description": "Uniform policy"
+  },
+  {
+    "query": "quy trình xử lý khi trẻ bị bỏng",
+    "expect_file": "Bỏng",
+    "description": "Burn emergency procedure"
+  }
+]
