@@ -27,9 +27,19 @@ def _strip_accents(s: str) -> str:
     return "".join(c for c in nfkd if not unicodedata.combining(c)).lower()
 
 
+_VN_STOPWORDS = frozenset({
+    "và", "về", "là", "có", "để", "do", "vì", "từ", "ra", "ở",
+    "đã", "sẽ", "mà", "hay", "nó", "ta", "ai", "gì",
+    "cho", "với", "tôi", "của", "các", "một", "này", "đó",
+    "khi", "nếu", "thì", "rồi", "như", "vào", "lên", "nên",
+    "còn", "nơi", "bạn", "hãy", "noi", "biết",
+})
+
+
 def test_keyword_search(query: str, expect: str, records: list, verbose: bool) -> bool:
     """Simulate keyword search and check if expected file appears in top results."""
-    keywords = [w for w in _nfc(query).split() if len(w) >= 3]
+    keywords = [w for w in _nfc(query).split()
+                if len(w) >= 2 and w not in _VN_STOPWORDS]
     keywords_stripped = [_strip_accents(k) for k in keywords]
     expect_lower = expect.lower()
     expect_stripped = _strip_accents(expect)
@@ -40,12 +50,16 @@ def test_keyword_search(query: str, expect: str, records: list, verbose: bool) -
         fname_bare = _strip_accents(rec.get("file_name", ""))
         text = _nfc(rec.get("text", ""))
 
-        fname_hits = sum(1 for k, ks in zip(keywords, keywords_stripped)
-                         if k in fname or ks in fname_bare)
+        fname_score = 0
+        for k, ks in zip(keywords, keywords_stripped):
+            if k in fname:
+                fname_score += 5
+            elif ks in fname_bare:
+                fname_score += 2
         text_hits = sum(1 for k in keywords if k in text)
 
-        if fname_hits > 0 or text_hits >= 1:
-            scored.append((-(fname_hits * 3 + text_hits), i))
+        if fname_score > 0 or text_hits >= 1:
+            scored.append((-(fname_score + text_hits), i))
 
     scored.sort(key=lambda x: x[0])
 

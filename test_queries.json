@@ -1,6 +1,6 @@
 [
   {
-    "query": "onboarding dành cho giáo viên về MET là gì",
+    "query": "100 câu hỏi onboarding giáo viên mới",
     "expect_file": "Bo_100_cau_hoi",
     "description": "MET onboarding Q&A for new teachers"
   },

@@ -87,6 +87,16 @@ def _strip_accents(s: str) -> str:
     return "".join(c for c in nfkd if not unicodedata.combining(c)).lower()
 
 
+# ── Vietnamese stopwords (common 2-char function words to skip) ───────────
+_VN_STOPWORDS = frozenset({
+    "và", "về", "là", "có", "để", "do", "vì", "từ", "ra", "ở",
+    "đã", "sẽ", "mà", "hay", "nó", "ta", "ai", "gì",
+    "cho", "với", "tôi", "của", "các", "một", "này", "đó",
+    "khi", "nếu", "thì", "rồi", "như", "vào", "lên", "nên",
+    "còn", "nơi", "bạn", "hãy", "noi", "biết",
+})
+
+
 # ── Search ─────────────────────────────────────────────────────────────────
 
 def _expand_query(query: str) -> list[str]:
@@ -105,7 +115,9 @@ def search(query: str, top_k: int = TOP_K) -> list[dict]:
     vectors, records  = _get_index()
 
     # ── 1. Keyword match on filename + text ────────────────────────────────
-    base_keywords = [w for w in _nfc(query).split() if len(w) >= 3]
+    # Min length 2 (not 3) — Vietnamese has important 2-char words like dị, xử, vệ
+    base_keywords = [w for w in _nfc(query).split()
+                     if len(w) >= 2 and w not in _VN_STOPWORDS]
     extra_keywords = [_nfc(w) for w in _expand_query(query)]
     keywords = list(dict.fromkeys(base_keywords + extra_keywords))  # dedupe, keep order
 
@@ -119,12 +131,17 @@ def search(query: str, top_k: int = TOP_K) -> list[dict]:
             fname      = _nfc(rec.get("file_name", ""))
             fname_bare = _strip_accents(rec.get("file_name", ""))
             text       = _nfc(rec.get("text", ""))
-            # Accent-insensitive filename match (giáo matches giao)
-            fname_hits = sum(1 for k, ks in zip(keywords, keywords_stripped)
-                            if k in fname or ks in fname_bare)
+            # Separate exact-accent vs stripped-only filename matches
+            # Exact match = high confidence (5 pts), stripped-only = low (2 pts)
+            fname_score = 0
+            for k, ks in zip(keywords, keywords_stripped):
+                if k in fname:
+                    fname_score += 5       # exact accent match
+                elif ks in fname_bare:
+                    fname_score += 2       # accent-stripped fallback (may be false positive)
             text_hits  = sum(1 for k in keywords if k in text)
-            if fname_hits > 0 or text_hits >= 1:   # lowered from 2 → 1 for text hits
-                scored.append((-(fname_hits * 3 + text_hits), i))
+            if fname_score > 0 or text_hits >= 1:
+                scored.append((-(fname_score + text_hits), i))
 
         scored.sort(key=lambda x: x[0])
         added = set()
