@@ -52,6 +52,13 @@ jobs:
           echo "So luong chunks:"
           python -c "import json; data=json.load(open('metadata.json')); files=set(d['file_name'] for d in data); print(f'  {len(data)} chunks tu {len(files)} files')"
 
+      - name: Smoke test (kiem tra retrieval quality)
+        run: |
+          echo "=== Smoke Test ==="
+          python smoke_test.py --verbose
+          echo ""
+          echo "Smoke test passed - retrieval quality OK"
+
       - name: Commit va push
         run: |
           git config user.name "github-actions[bot]"
