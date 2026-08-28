@@ -341,71 +341,103 @@ def main_sharepoint():
 
     print(f"\nPass 1 done: {len(all_records)} chunks from {len(set(r['file_name'] for r in all_records))} files.\n")
 
-    # ── PASS 2: Concurrent TOC generation ──
+    # ── PASS 2: Concurrent TOC generation (INCREMENTAL) ──
     toc_entries = []
     if ANTHROPIC_API_KEY and toc_jobs:
+        # Load existing TOC to skip files that already have entries
+        toc_path = Path("toc.json")
+        existing_toc = []
+        existing_paths = set()
+        if toc_path.exists():
+            try:
+                with open(toc_path, encoding="utf-8") as f:
+                    existing_toc = json.load(f)
+                existing_paths = {e["file_path"] for e in existing_toc}
+                print(f"  Loaded existing TOC: {len(existing_toc)} entries")
+            except Exception as e:
+                print(f"  WARN: Could not load existing toc.json: {e}")
+
+        # Filter out files that already have TOC entries
+        new_toc_jobs = [j for j in toc_jobs if j["file_path"] not in existing_paths]
+        skipped = len(toc_jobs) - len(new_toc_jobs)
+
+        # Keep existing entries that still exist in current data
+        current_paths = {j["file_path"] for j in toc_jobs}
+        toc_entries = [e for e in existing_toc if e["file_path"] in current_paths]
+        removed = len(existing_toc) - len(toc_entries)
+        if removed > 0:
+            print(f"  Removed {removed} TOC entries for deleted files")
+
         TOC_WORKERS = 10  # concurrent Haiku calls
         print("=" * 60)
-        print(f"PASS 2: TOC generation ({len(toc_jobs)} files, {TOC_WORKERS} concurrent workers)")
+        print(f"PASS 2: TOC generation — {skipped} skipped (existing), {len(new_toc_jobs)} new, {TOC_WORKERS} workers")
         print("=" * 60)
+
+        toc_jobs = new_toc_jobs  # only process new files
 
         toc_success, toc_fail = 0, 0
 
-        def _toc_worker(job):
-            """Worker function for concurrent TOC generation."""
-            toc = generate_toc_entry(job["text"], job["file_name"], job["file_path"])
-            if toc:
-                return {
-                    "file_name":  job["file_name"],
-                    "file_path":  job["file_path"],
-                    "folder":     job["folder"],
-                    "url":        job["url"],
-                    "summary":    toc["summary"],
-                    "questions":  toc["questions"],
-                    "word_count": job["word_count"],
-                }
-            return None
+        if not toc_jobs:
+            print(f"\n✓ All files already have TOC entries. Nothing to generate.")
+            print(f"  Keeping {len(toc_entries)} existing entries.")
 
-        # Fail-fast: test first 3 files sequentially
-        test_count = min(3, len(toc_jobs))
-        test_ok = 0
-        for i in range(test_count):
-            result = _toc_worker(toc_jobs[i])
-            if result:
-                toc_entries.append(result)
-                test_ok += 1
-                toc_success += 1
-                print(f"  TOC test [{i+1}/{test_count}] ✓ {toc_jobs[i]['file_name']}")
-            else:
-                toc_fail += 1
-                print(f"  TOC test [{i+1}/{test_count}] ✗ {toc_jobs[i]['file_name']}")
-
-        if test_ok == 0:
-            print(f"\n⚠ TOC DISABLED: first {test_count} calls all failed — skipping TOC")
         else:
-            remaining = toc_jobs[test_count:]
-            print(f"\n  Test passed ({test_ok}/{test_count}). Processing {len(remaining)} remaining files concurrently…\n")
+            def _toc_worker(job):
+                """Worker function for concurrent TOC generation."""
+                toc = generate_toc_entry(job["text"], job["file_name"], job["file_path"])
+                if toc:
+                    return {
+                        "file_name":  job["file_name"],
+                        "file_path":  job["file_path"],
+                        "folder":     job["folder"],
+                        "url":        job["url"],
+                        "summary":    toc["summary"],
+                        "questions":  toc["questions"],
+                        "word_count": job["word_count"],
+                    }
+                return None
 
-            with ThreadPoolExecutor(max_workers=TOC_WORKERS) as pool:
-                futures = {pool.submit(_toc_worker, job): job for job in remaining}
-                for done_count, future in enumerate(as_completed(futures), test_count + 1):
-                    job = futures[future]
-                    try:
-                        result = future.result()
-                        if result:
-                            toc_entries.append(result)
-                            toc_success += 1
-                        else:
+            # Fail-fast: test first 3 files sequentially
+            test_count = min(3, len(toc_jobs))
+            test_ok = 0
+            for i in range(test_count):
+                result = _toc_worker(toc_jobs[i])
+                if result:
+                    toc_entries.append(result)
+                    test_ok += 1
+                    toc_success += 1
+                    print(f"  TOC test [{i+1}/{test_count}] ✓ {toc_jobs[i]['file_name']}")
+                else:
+                    toc_fail += 1
+                    print(f"  TOC test [{i+1}/{test_count}] ✗ {toc_jobs[i]['file_name']}")
+
+            if test_ok == 0:
+                print(f"\n⚠ TOC DISABLED: first {test_count} calls all failed — skipping TOC")
+            else:
+                remaining = toc_jobs[test_count:]
+                print(f"\n  Test passed ({test_ok}/{test_count}). Processing {len(remaining)} remaining files concurrently…\n")
+
+                with ThreadPoolExecutor(max_workers=TOC_WORKERS) as pool:
+                    futures = {pool.submit(_toc_worker, job): job for job in remaining}
+                    for done_count, future in enumerate(as_completed(futures), test_count + 1):
+                        job = futures[future]
+                        try:
+                            result = future.result()
+                            if result:
+                                toc_entries.append(result)
+                                toc_success += 1
+                            else:
+                                toc_fail += 1
+                        except Exception as e:
                             toc_fail += 1
-                    except Exception as e:
-                        toc_fail += 1
-                        print(f"  WARN TOC error for {job['file_name']}: {type(e).__name__}: {e}")
+                            print(f"  WARN TOC error for {job['file_name']}: {type(e).__name__}: {e}")
 
-                    # Progress every 50 files
-                    if done_count % 50 == 0 or done_count == len(toc_jobs):
-                        print(f"  TOC progress: {done_count}/{len(toc_jobs)} (✓{toc_success} ✗{toc_fail})")
+                        # Progress every 50 files
+                        if done_count % 50 == 0 or done_count == len(toc_jobs):
+                            print(f"  TOC progress: {done_count}/{len(toc_jobs)} (✓{toc_success} ✗{toc_fail})")
 
-        print(f"\nTOC: {toc_success} success, {toc_fail} failed out of {toc_success + toc_fail} files")
+            print(f"\nTOC: {toc_success} success, {toc_fail} failed out of {toc_success + toc_fail} new files")
+            print(f"  Total TOC entries: {len(toc_entries)} (existing + new)")
 
     _save(all_vectors, all_records, toc_entries)
 
@@ -441,7 +473,19 @@ def main_local():
 
     all_vectors, all_records = [], []
     toc_entries = []
-    toc_success, toc_fail = 0, 0
+    toc_success, toc_fail, toc_skipped = 0, 0, 0
+
+    # Load existing TOC for incremental generation
+    toc_path = Path("toc.json")
+    existing_toc_map = {}  # file_path → entry
+    if toc_path.exists():
+        try:
+            with open(toc_path, encoding="utf-8") as f:
+                for e in json.load(f):
+                    existing_toc_map[e["file_path"]] = e
+            print(f"  Loaded existing TOC: {len(existing_toc_map)} entries (incremental mode)")
+        except Exception:
+            pass
 
     for idx, fpath in enumerate(files, 1):
         rel    = fpath.relative_to(MANUAL_ROOT)
@@ -471,25 +515,31 @@ def main_local():
                 "url":       url,
             })
 
-        # ── TOC generation ──
+        # ── TOC generation (incremental — skip existing) ──
         if ANTHROPIC_API_KEY:
-            toc = generate_toc_entry(text, fpath.name, str(rel))
-            if toc:
-                toc_entries.append({
-                    "file_name": fpath.name,
-                    "file_path": str(rel),
-                    "folder":    folder,
-                    "url":       url,
-                    "summary":   toc["summary"],
-                    "questions": toc["questions"],
-                    "word_count": len(text.split()),
-                })
-                toc_success += 1
-                print(f"  → {len(chunks)} chunks + TOC ✓")
+            rel_str = str(rel)
+            if rel_str in existing_toc_map:
+                toc_entries.append(existing_toc_map[rel_str])
+                toc_skipped += 1
+                print(f"  → {len(chunks)} chunks + TOC ✓ (existing)")
             else:
-                toc_fail += 1
-                print(f"  → {len(chunks)} chunks (TOC failed)")
-            time.sleep(0.3)
+                toc = generate_toc_entry(text, fpath.name, rel_str)
+                if toc:
+                    toc_entries.append({
+                        "file_name": fpath.name,
+                        "file_path": rel_str,
+                        "folder":    folder,
+                        "url":       url,
+                        "summary":   toc["summary"],
+                        "questions": toc["questions"],
+                        "word_count": len(text.split()),
+                    })
+                    toc_success += 1
+                    print(f"  → {len(chunks)} chunks + TOC ✓ (new)")
+                else:
+                    toc_fail += 1
+                    print(f"  → {len(chunks)} chunks (TOC failed)")
+                time.sleep(0.3)
         else:
             print(f"  → {len(chunks)} chunks indexed")
 

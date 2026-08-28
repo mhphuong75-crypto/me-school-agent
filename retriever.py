@@ -179,10 +179,63 @@ def search(query: str, top_k: int = TOP_K) -> list[dict]:
 
 # ── TOC-based search (LLM-powered) ────────────────────────────────────────
 
+MAX_TOC_CANDIDATES = 50   # max entries to send to Haiku (cost optimization)
+
+
+def _prefilter_toc(query: str, toc: list[dict]) -> list[int]:
+    """Pre-filter TOC entries by keyword relevance before sending to Haiku.
+    Returns list of original TOC indices, sorted by relevance score."""
+    if len(toc) <= MAX_TOC_CANDIDATES:
+        return list(range(len(toc)))   # small enough, send all
+
+    # Extract keywords from query (same logic as main search)
+    base_keywords = [w for w in _nfc(query).split()
+                     if len(w) >= 2 and w not in _VN_STOPWORDS]
+    extra_keywords = [_nfc(w) for w in _expand_query(query)]
+    keywords = list(dict.fromkeys(base_keywords + extra_keywords))
+
+    if not keywords:
+        return list(range(MAX_TOC_CANDIDATES))
+
+    keywords_stripped = [_strip_accents(k) for k in keywords]
+
+    scored = []
+    for i, entry in enumerate(toc):
+        fname      = _nfc(entry.get("file_path", ""))
+        fname_bare = _strip_accents(entry.get("file_path", ""))
+        summary    = _nfc(entry.get("summary", ""))
+        questions  = _nfc(" ".join(entry.get("questions", [])))
+
+        score = 0
+        for k, ks in zip(keywords, keywords_stripped):
+            if k in fname:
+                score += 5       # exact filename match
+            elif ks in fname_bare:
+                score += 2       # accent-stripped filename
+            if k in summary:
+                score += 3       # summary match
+            if k in questions:
+                score += 2       # questions match
+
+        scored.append((score, i))
+
+    scored.sort(key=lambda x: -x[0])
+
+    # Take entries with score > 0
+    filtered = [i for score, i in scored if score > 0]
+
+    if not filtered:
+        # No keyword matches — take first MAX_TOC_CANDIDATES (let Haiku decide)
+        return list(range(MAX_TOC_CANDIDATES))
+
+    return filtered[:MAX_TOC_CANDIDATES]
+
+
 def search_toc(query: str, api_key: str = "") -> list[dict]:
     """
     Use Claude Haiku to pick relevant files from toc.json, then return
     all chunks from those files. Falls back to empty list on any failure.
+    Pre-filters TOC entries locally to reduce Haiku token cost.
     """
     toc = _get_toc()
     if not toc:
@@ -192,12 +245,16 @@ def search_toc(query: str, api_key: str = "") -> list[dict]:
     if not key:
         return []
 
-    # Build compact TOC text for the prompt
+    # Pre-filter: only send relevant TOC entries to Haiku
+    candidate_indices = _prefilter_toc(query, toc)
+
+    # Build compact TOC text for candidates only (with sequential numbering)
     toc_text_parts = []
-    for i, entry in enumerate(toc):
+    for new_idx, orig_idx in enumerate(candidate_indices):
+        entry = toc[orig_idx]
         qs = "; ".join(entry.get("questions", [])[:5])
         toc_text_parts.append(
-            f"[{i}] {entry['file_path']}\n"
+            f"[{new_idx}] {entry['file_path']}\n"
             f"    Tóm tắt: {entry.get('summary', 'N/A')}\n"
             f"    Câu hỏi: {qs}"
         )
@@ -236,11 +293,12 @@ QUY TẮC:
         data = json.loads(raw.strip())
         indices = data.get("file_indices", [])
 
-        # Collect file_paths from selected TOC entries
+        # Map returned indices back to original TOC positions
         selected_paths = set()
         for idx in indices:
-            if 0 <= idx < len(toc):
-                selected_paths.add(toc[idx]["file_path"])
+            if 0 <= idx < len(candidate_indices):
+                orig_idx = candidate_indices[idx]
+                selected_paths.add(toc[orig_idx]["file_path"])
 
         if not selected_paths:
             return []
