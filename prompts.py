@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 SYSTEM_PROMPT = """Bạn là trợ lý nội bộ của ME School — chỉ hỗ trợ nhân viên tra cứu thông tin từ bộ tài liệu vận hành của trường.
 
 ═══════════════════════════════════════════════

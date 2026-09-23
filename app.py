@@ -14,10 +14,7 @@ import anthropic
 import streamlit as st
 from dotenv import load_dotenv
 
-from prompts import (
-    SYSTEM_PROMPT, INTERACTIVE_SYSTEM_PROMPT, CLARIFY_SYSTEM_PROMPT,
-    ONBOARDING_QUERY, LEARNING_SIGNALS,
-)
+from prompts import SYSTEM_PROMPT, INTERACTIVE_SYSTEM_PROMPT, CLARIFY_SYSTEM_PROMPT, ONBOARDING_QUERY, LEARNING_SIGNALS
 from retriever import search, search_toc, has_toc, format_context, unique_sources
 
 load_dotenv()
