@@ -14,7 +14,10 @@ import anthropic
 import streamlit as st
 from dotenv import load_dotenv
 
-from prompts import SYSTEM_PROMPT, CLARIFY_SYSTEM_PROMPT, ONBOARDING_QUERY
+from prompts import (
+    SYSTEM_PROMPT, INTERACTIVE_SYSTEM_PROMPT, CLARIFY_SYSTEM_PROMPT,
+    ONBOARDING_QUERY, LEARNING_SIGNALS,
+)
 from retriever import search, search_toc, has_toc, format_context, unique_sources
 
 load_dotenv()
@@ -132,6 +135,40 @@ def _search_is_good(hits: list[dict]) -> bool:
     return len(hits) >= 3  # 3+ semantic hits → acceptable
 
 
+# ── Learning mode detection ───────────────────────────────────────────────
+
+MAX_HISTORY_TURNS = 5   # keep last N user-assistant pairs to control token growth
+
+def _is_learning_query(query: str) -> bool:
+    """Detect if a query signals desire to learn/understand (not just lookup).
+    Uses keyword matching — no API call, zero cost."""
+    q = query.lower()
+    # Short factual lookups (≤3 words) are almost never learning queries
+    if len(query.split()) <= 3:
+        return False
+    return any(signal in q for signal in LEARNING_SIGNALS)
+
+
+def _trim_history(messages: list[dict]) -> list[dict]:
+    """Keep only the last MAX_HISTORY_TURNS user-assistant pairs.
+    Prevents token explosion in multi-turn interactive sessions."""
+    if len(messages) <= MAX_HISTORY_TURNS * 2:
+        return messages
+    return messages[-(MAX_HISTORY_TURNS * 2):]
+
+
+def _is_followup_on_same_topic(messages: list[dict]) -> bool:
+    """Check if user is continuing the same topic (no need to re-retrieve).
+    True when the latest user message is short and there's cached context."""
+    if len(messages) < 3:  # need at least 1 prior exchange
+        return False
+    last_msg = messages[-1]["content"] if messages[-1]["role"] == "user" else ""
+    # Short follow-ups (≤8 words) on existing conversation = same topic
+    if len(last_msg.split()) <= 8 and st.session_state.get("_cached_context"):
+        return True
+    return False
+
+
 # ── Retrieval ──────────────────────────────────────────────────────────────
 
 def get_retrieval(conversation: list[dict], extra_query: str = "") -> tuple[str, list[dict], list[dict]]:
@@ -173,13 +210,16 @@ def get_retrieval(conversation: list[dict], extra_query: str = "") -> tuple[str,
 
 # ── Answer streaming ───────────────────────────────────────────────────────
 
-def stream_answer(conversation: list[dict], context: str):
+def stream_answer(conversation: list[dict], context: str,
+                   interactive: bool = False):
     """
     Generator that streams Claude's answer token-by-token.
     Call get_retrieval() first to obtain context.
+    interactive=True uses the learning/Socratic prompt.
     """
+    base_prompt = INTERACTIVE_SYSTEM_PROMPT if interactive else SYSTEM_PROMPT
     system_with_context = (
-        SYSTEM_PROMPT
+        base_prompt
         + f"\n\n[CONTEXT]\n{context}\n[/CONTEXT]"
     )
 
@@ -205,13 +245,28 @@ if "pending_clarification" not in st.session_state:
 if "original_query" not in st.session_state:
     st.session_state.original_query = ""
 
+if "learning_mode" not in st.session_state:
+    st.session_state.learning_mode = False  # toggle: learning vs quick-answer
+
+if "_cached_context" not in st.session_state:
+    st.session_state._cached_context = ""   # reuse context for follow-ups
+
+if "_cached_sources" not in st.session_state:
+    st.session_state._cached_sources = []
+
 # ── UI ─────────────────────────────────────────────────────────────────────
 
 st.title("Em gái Sotana 🏫")
-st.caption(
-    "Hỏi bất kỳ điều gì về quy trình, biểu mẫu hoặc chính sách của ME School. "
-    "Tôi chỉ trả lời dựa trên bộ tài liệu vận hành của trường."
-)
+if st.session_state.learning_mode:
+    st.caption(
+        "🎓 **Chế độ Học tập** — Tôi sẽ hướng dẫn bạn hiểu sâu tài liệu, "
+        "đặt câu hỏi giúp bạn suy nghĩ, và gợi ý nội dung liên quan."
+    )
+else:
+    st.caption(
+        "Hỏi bất kỳ điều gì về quy trình, biểu mẫu hoặc chính sách của ME School. "
+        "Tôi chỉ trả lời dựa trên bộ tài liệu vận hành của trường."
+    )
 st.divider()
 
 # --- Render conversation history ---
@@ -241,24 +296,40 @@ if user_input:
     # Sidebar-injected queries (e.g. onboarding button) skip clarification entirely
     is_injected = (user_input == ONBOARDING_QUERY)
 
-    # ── Step 1: Search first ────────────────────────────────────────────────
-    with st.spinner("Đang tìm kiếm tài liệu…"):
-        try:
-            context, sources, hits = get_retrieval(
-                st.session_state.messages,
-                extra_query=original_q,   # combine original + clarification answer
-            )
-        except Exception as e:
-            context = "Không tìm thấy tài liệu nào liên quan đến câu hỏi này."
-            sources = []
-            hits    = []
+    # ── Determine mode: learning or quick-answer ───────────────────────────
+    # Manual toggle overrides auto-detect; auto-detect kicks in when toggle is off
+    use_interactive = st.session_state.learning_mode or (
+        not is_injected and _is_learning_query(user_input)
+    )
+
+    # ── Step 1: Search (or reuse cached context for follow-ups) ────────────
+    if use_interactive and _is_followup_on_same_topic(st.session_state.messages):
+        # Reuse previous context — save a Haiku TOC call
+        context = st.session_state._cached_context
+        sources = st.session_state._cached_sources
+        hits    = []  # not needed for follow-ups
+    else:
+        with st.spinner("Đang tìm kiếm tài liệu…"):
+            try:
+                context, sources, hits = get_retrieval(
+                    st.session_state.messages,
+                    extra_query=original_q,
+                )
+            except Exception as e:
+                context = "Không tìm thấy tài liệu nào liên quan đến câu hỏi này."
+                sources = []
+                hits    = []
+        # Cache for potential follow-ups
+        st.session_state._cached_context = context
+        st.session_state._cached_sources = sources
 
     # ── Step 2: Clarify only if search is weak AND query is short/ambiguous ─
     should_try_clarify = (
         not is_injected
-        and not was_clarifying          # don't ask twice
-        and not _search_is_good(hits)   # only if results are poor
-        and len(user_input.split()) <= 4  # only for short / possibly vague queries
+        and not was_clarifying
+        and not use_interactive        # interactive mode handles ambiguity itself
+        and not _search_is_good(hits)
+        and len(user_input.split()) <= 4
     )
 
     if should_try_clarify:
@@ -288,9 +359,15 @@ if user_input:
             )
 
     # ── Step 4: Stream the answer ────────────────────────────────────────────
+    # Trim history to prevent token explosion in interactive sessions
+    trimmed_messages = _trim_history(st.session_state.messages)
+
     with st.chat_message("assistant"):
         try:
-            answer = st.write_stream(stream_answer(st.session_state.messages, context))
+            answer = st.write_stream(
+                stream_answer(trimmed_messages, context,
+                              interactive=use_interactive)
+            )
         except Exception as e:
             answer = f"⚠️ Lỗi khi gọi API: {e}"
             st.markdown(answer)
@@ -321,6 +398,21 @@ with st.sidebar:
         3. Nhận câu trả lời kèm nguồn tài liệu
         """
     )
+
+    st.divider()
+    st.subheader("🎓 Chế độ Học tập")
+    st.caption(
+        "Bật để Sotana tương tác như mentor — đặt câu hỏi, "
+        "hướng dẫn suy nghĩ, gợi ý đọc thêm."
+    )
+    learning_on = st.toggle(
+        "Bật chế độ học tập",
+        value=st.session_state.learning_mode,
+        key="learning_toggle",
+    )
+    if learning_on != st.session_state.learning_mode:
+        st.session_state.learning_mode = learning_on
+        st.rerun()
 
     st.divider()
     st.subheader("🗄️ Cập nhật tài liệu")
@@ -355,8 +447,8 @@ with st.sidebar:
                 st.error("❌ Lỗi:\n" + result.stderr[-500:])
     else:
         st.info(
-            "Để cập nhật tài liệu: chạy `2_build_database.sh` trên máy tính "
-            "→ commit & push lên GitHub → app tự cập nhật sau 1–2 phút."
+            "Tài liệu được cập nhật tự động qua GitHub Actions khi có file mới "
+            "trên SharePoint. App tự cập nhật sau 1–2 phút."
         )
 
     st.divider()
@@ -372,4 +464,6 @@ with st.sidebar:
     if st.button("🗑️ Xoá lịch sử chat", use_container_width=True):
         st.session_state.messages = []
         st.session_state.pending_clarification = False
+        st.session_state._cached_context = ""
+        st.session_state._cached_sources = []
         st.rerun()
